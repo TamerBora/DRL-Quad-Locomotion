@@ -42,6 +42,8 @@ parser.add_argument(
     help="When no checkpoint provided, use the last saved model. Otherwise use the best saved model.",
 )
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
+parser.add_argument("--cmd", type=float, nargs=3, default=None, metavar=("LIN_X", "LIN_Y", "ANG_Z"),
+                    help="Override velocity command every step, e.g. --cmd 1.0 0.0 0.0")
 parser.add_argument(
     "--keep_all_info",
     action="store_true",
@@ -112,6 +114,7 @@ if _LAB_MACHINE:
 else:
     import isaaclab_tasks.manager_based.locomotion.velocity.config.a1  # noqa: F401
     import robot_lab.tasks.manager_based.locomotion.velocity.config.quadruped.unitree_a1  # noqa: F401
+    import robot_lab.tasks.manager_based.locomotion.velocity.config.wheeled.unitree_go2w  # noqa: F401
 from isaaclab_tasks.utils.hydra import hydra_task_config
 from isaaclab_tasks.utils.parse_cfg import get_checkpoint_path
 
@@ -222,12 +225,21 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     dt = env.unwrapped.step_dt
 
+    # fixed velocity command override (optional)
+    cmd_override = None
+    if args_cli.cmd is not None:
+        cmd_override = torch.tensor(args_cli.cmd, device=env.unwrapped.device).unsqueeze(0).expand(env.unwrapped.num_envs, -1)
+        print(f"[INFO] Command override: lin_x={args_cli.cmd[0]}, lin_y={args_cli.cmd[1]}, ang_z={args_cli.cmd[2]}")
+
     # reset environment
     obs = env.reset()
     timestep = 0
     # simulate environment
     while simulation_app.is_running():
         start_time = time.time()
+        # inject fixed command if requested
+        if cmd_override is not None:
+            env.unwrapped.command_manager.get_command("base_velocity")[:] = cmd_override
         # run everything in inference mode
         with torch.inference_mode():
             # agent stepping

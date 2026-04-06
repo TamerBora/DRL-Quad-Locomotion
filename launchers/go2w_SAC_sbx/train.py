@@ -136,6 +136,7 @@ if _LAB_MACHINE:
 else:
     import isaaclab_tasks.manager_based.locomotion.velocity.config.a1  # noqa: F401
     import robot_lab.tasks.manager_based.locomotion.velocity.config.quadruped.unitree_a1  # noqa: F401
+    import robot_lab.tasks.manager_based.locomotion.velocity.config.wheeled.unitree_go2w  # noqa: F401
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
 # import logger
@@ -306,7 +307,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             high= 5, # np.array([13.03, 17.21, 11.49, 18.36, 12.78, 9.45, 9.56, 6.36, 8.46, 11.41, 7.99, 7.53])*0.5, 
             shape=(12,), dtype=np.float32
         )
-    if args_cli.algorithm == "sac" and args_cli.task == "robotlab-go2w-flat-v0":
+    if args_cli.algorithm == "sac" and args_cli.task == "RobotLab-Isaac-Velocity-Flat-Unitree-Go2W-v0":
         env.action_space = gym.spaces.Box( # my actions
             low= -5, # np.array([-13.07, -12.50, -3.67, -13.50, -14.37, -3.51, -9.13, -5.38, -4.45, -11.73, -5.67, -3.41])*0.5, 
             high= 5, # np.array([13.03, 17.21, 11.49, 18.36, 12.78, 9.45, 9.56, 6.36, 8.46, 11.41, 7.99, 7.53])*0.5, 
