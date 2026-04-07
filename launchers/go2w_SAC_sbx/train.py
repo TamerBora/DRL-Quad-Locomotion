@@ -179,25 +179,44 @@ class AdditionalLoggerCallback(BaseCallback):
 
         # 3. Read Native Isaac Lab Data directly
         try:
-            env = self.training_env.unwrapped
-            if "log" in env.extras:
-                for key, value in env.extras["log"].items():
+            # unwrap through VecNormalize if present
+            vec_env = self.training_env
+            isaac_env = vec_env.unwrapped
+            if hasattr(isaac_env, "unwrapped"):
+                isaac_env = isaac_env.unwrapped
+            # 3a. Per-term reward breakdown from Isaac Lab extras
+            if "log" in isaac_env.extras:
+                for key, value in isaac_env.extras["log"].items():
                     try:
                         if isinstance(value, torch.Tensor):
-                            val = value.item()
+                            val = float(value.mean().item())
                         else:
                             val = float(value)
                         log_dict[f"isaac_native/{key}"] = val
                     except (ValueError, TypeError):
                         continue
-        except AttributeError:
+            # 3b. Explicit physics-state metrics
+            robot = isaac_env.scene["robot"]
+            grav_b = robot.data.projected_gravity_b
+            cmd = isaac_env.command_manager.get_command("base_velocity")
+            lin_vel_b = robot.data.root_lin_vel_b[:, :2]
+            log_dict["env/orientation_error"]    = float(grav_b[:, :2].norm(dim=1).mean().item())
+            log_dict["env/lin_vel_tracking_error"] = float((cmd[:, :2] - lin_vel_b).norm(dim=1).mean().item())
+            log_dict["env/ang_vel_tracking_error"] = float((cmd[:, 2] - robot.data.root_ang_vel_b[:, 2]).abs().mean().item())
+            log_dict["env/base_height"]          = float(robot.data.root_pos_w[:, 2].mean().item())
+            log_dict["env/roll_error_rad"]        = float(grav_b[:, 1].abs().mean().item())
+            log_dict["env/pitch_error_rad"]       = float(grav_b[:, 0].abs().mean().item())
+        except (AttributeError, KeyError):
             pass
-            
-        # 4. Push everything we gathered this step to WandB simultaneously
+
+        # 4. Push to both TensorBoard (via SB3 logger) and WandB
         if log_dict:
+            for key, val in log_dict.items():
+                if isinstance(val, float):
+                    self.logger.record(key, val)
             log_dict["timestep"] = self.num_timesteps
             wandb.log(log_dict, commit=False)
-            
+
         return True
 
    
@@ -262,11 +281,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     
     run = wandb.init(
         project="comparisons",
-        name=args_cli.wandb_name, 
+        name=args_cli.wandb_name,
         config=env_cfg,
         sync_tensorboard=True,  # auto-upload sb3's tensorboard metrics
         monitor_gym=True,  # auto-upload the videos of agents playing the game
         save_code=True,  # optional
+        mode=os.environ.get("WANDB_MODE", "online"),
     )
     # convert to single-agent instance if required by the RL algorithm
     if isinstance(env.unwrapped, DirectMARLEnv):
