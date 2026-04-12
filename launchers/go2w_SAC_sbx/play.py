@@ -52,6 +52,7 @@ parser.add_argument(
 )
 parser.add_argument("--ml_framework", type=str, default="jax", choices=["jax", "torch"], help="Machine learning framework to use.")
 parser.add_argument("--algorithm", type=str, required=True, default="None", choices=["ppo", "sac"], help="RL algorithm to use for training.")
+parser.add_argument("--agent", type=str, default=None, help="Override agent config entry point key.")
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
@@ -120,7 +121,8 @@ from isaaclab_tasks.utils.parse_cfg import get_checkpoint_path
 
 # PLACEHOLDER: Extension template (do not remove this comment)
 
-@hydra_task_config(args_cli.task, f"sb3_{args_cli.algorithm.lower()}_cfg_entry_point")
+_agent_entry_point = args_cli.agent if args_cli.agent is not None else f"sb3_{args_cli.algorithm.lower()}_cfg_entry_point"
+@hydra_task_config(args_cli.task, _agent_entry_point)
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: dict):
     """Play with stable-baselines agent."""
     # grab task name for checkpoint path
