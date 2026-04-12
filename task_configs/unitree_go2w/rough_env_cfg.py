@@ -139,7 +139,7 @@ class UnitreeGo2WRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         # Root penalties
         self.rewards.lin_vel_z_l2.weight = -2.0
         self.rewards.ang_vel_xy_l2.weight = -0.3
-        self.rewards.flat_orientation_l2.weight = -1.5
+        self.rewards.flat_orientation_l2.weight = -3.0
         # self.rewards.base_height_l2.weight = 0
         self.rewards.base_height_l2.weight = -2.0
         self.rewards.base_height_l2.params["target_height"] = 0.40
@@ -174,12 +174,19 @@ class UnitreeGo2WRoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         self.rewards.wheel_vel_penalty.weight = 0
         self.rewards.wheel_vel_penalty.params["sensor_cfg"].body_names = [self.foot_link_name]
         self.rewards.wheel_vel_penalty.params["asset_cfg"].joint_names = self.wheel_joint_names
-        # Diagonal symmetry (trot pairs): FR↔RL, FL↔RR
-        # Left-right symmetry: FR↔FL, RR↔RL — enforces bilateral symmetry for forward driving
-        self.rewards.joint_mirror.weight = -0.5
+        # Left-right bilateral symmetry only: FR↔FL, RR↔RL.
+        # Diagonal trot pairs (FR↔RL) removed — Go2W is wheel-driven, not a trotting robot.
+        # Weight -1.0: joint_mirror normalizes by len(pairs), so 2 pairs × -1.0 / 2 = -0.5 per pair.
+        self.rewards.joint_mirror.weight = -1.0
         self.rewards.joint_mirror.params["mirror_joints"] = [
-            ["FR_(hip|thigh|calf).*", "RL_(hip|thigh|calf).*"],
-            ["FL_(hip|thigh|calf).*", "RR_(hip|thigh|calf).*"],
+            ["FR_(hip|thigh|calf).*", "FL_(hip|thigh|calf).*"],
+            ["RR_(hip|thigh|calf).*", "RL_(hip|thigh|calf).*"],
+        ]
+        # action_mirror penalizes asymmetric commands at the policy output level,
+        # upstream of joint_mirror which only catches position error after it accumulates.
+        # Two-layer enforcement: command symmetry + position symmetry.
+        self.rewards.action_mirror.weight = -0.5
+        self.rewards.action_mirror.params["mirror_joints"] = [
             ["FR_(hip|thigh|calf).*", "FL_(hip|thigh|calf).*"],
             ["RR_(hip|thigh|calf).*", "RL_(hip|thigh|calf).*"],
         ]
