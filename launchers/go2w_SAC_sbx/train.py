@@ -16,10 +16,12 @@ import sys
 from pathlib import Path
 
 # ── Path setup ────────────────────────────────────────────────────────────────
+# Auto-detect lab machine (has quadruped_lab); everyone else uses robot_lab.
+# Set ROBOT_LAB_DIR to override the default robot_lab location.
 _LAB_MACHINE = os.path.isdir("/home/roblab/quadruped_lab")
+_robot_lab_root = os.environ.get("ROBOT_LAB_DIR", os.path.expanduser("~/robotics/robot_lab"))
 if not _LAB_MACHINE:
-    _ROBOTICS_DIR = os.path.expanduser("~/robotics")
-    sys.path.insert(0, os.path.join(_ROBOTICS_DIR, "robot_lab", "source", "robot_lab"))
+    sys.path.insert(0, os.path.join(_robot_lab_root, "source", "robot_lab"))
 
 import optax
 

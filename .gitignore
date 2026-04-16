@@ -5,20 +5,24 @@ robot_lab/
 # Unignore only the tracked components
 !.gitignore
 !README.md
+!setup_task_configs.sh
 !launchers/
 !robot_lab/
 
 # Track task_configs (modified robot_lab files)
 !task_configs/
 
-# Within launchers, only track go2w_SAC_sbx and go2w_PPO_SBX
+# Within launchers, only track specific subdirectories
 launchers/*
 !launchers/go2w_SAC_sbx/
-!launchers/go2w_PPO_SBX/
+!launchers/go2w_GSAC_sbx/
+!launchers/sbx_source/
+launchers/sbx_source/*
+!launchers/sbx_source/gsac/
 
 # Exclude logs (model checkpoints, tensorboard — too large)
 launchers/go2w_SAC_sbx/logs/
-launchers/go2w_PPO_SBX/logs/
+launchers/go2w_GSAC_sbx/logs/
 
 # Within robot_lab, exclude heavy data assets and build artifacts
 robot_lab/source/robot_lab/data/

@@ -13,10 +13,12 @@ import sys
 from pathlib import Path
 
 # ── Path setup ────────────────────────────────────────────────────────────────
+# Auto-detect lab machine (has quadruped_lab); everyone else uses robot_lab.
+# Set ROBOT_LAB_DIR to override the default robot_lab location.
 _LAB_MACHINE = os.path.isdir("/home/roblab/quadruped_lab")
+_robot_lab_root = os.environ.get("ROBOT_LAB_DIR", os.path.expanduser("~/robotics/robot_lab"))
 if not _LAB_MACHINE:
-    _ROBOTICS_DIR = os.path.expanduser("~/robotics")
-    sys.path.insert(0, os.path.join(_ROBOTICS_DIR, "robot_lab", "source", "robot_lab"))
+    sys.path.insert(0, os.path.join(_robot_lab_root, "source", "robot_lab"))
 
 from isaaclab.app import AppLauncher
 
@@ -187,20 +189,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         env = gym.wrappers.RecordVideo(env, **video_kwargs)
     # wrap around environment for stable baselines
     env = Sb3VecEnvWrapper(env, fast_variant=not args_cli.keep_all_info)
-
-    # --- SPACE PEEK ---
-    if os.path.exists(checkpoint_path):
-        try:
-            from stable_baselines3.common.save_util import load_from_zip_file
-            data, _, _ = load_from_zip_file(checkpoint_path)
-            if "action_space" in data:
-                env.action_space = data["action_space"]
-                print(f"[INFO] Auto-detected Action Space: {env.action_space}")
-            if "observation_space" in data:
-                env.observation_space = data["observation_space"]
-                print(f"[INFO] Auto-detected Observation Space: {env.observation_space}")
-        except Exception as e:
-            print(f"[WARNING] Space peek failed: {e}")
+    print(f"[INFO] Env wrapped. obs={env.observation_space} act={env.action_space}", flush=True)
 
     vec_norm_path = checkpoint_path.replace("/model", "/model_vecnormalize").replace(".zip", ".pkl")
     vec_norm_path = Path(vec_norm_path)
@@ -222,10 +211,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         )
 
     # create agent from stable baselines
-    print(f"Loading checkpoint from: {checkpoint_path}")
+    print(f"Loading checkpoint from: {checkpoint_path}", flush=True)
     agent = RLAlgorithm.load(checkpoint_path, env, print_system_info=True)
 
     dt = env.unwrapped.step_dt
+    print(f"[INFO] Step dt: {dt}", flush=True)
 
     # fixed velocity command override (optional)
     cmd_override = None
