@@ -5,6 +5,7 @@ robot_lab/
 # Unignore only the tracked components
 !.gitignore
 !README.md
+!requirements.txt
 !setup_task_configs.sh
 !launchers/
 !robot_lab/

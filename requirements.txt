@@ -1,0 +1,4 @@
+# Tested versions — install inside your IsaacLab Python environment
+sbx-rl==0.25.0
+stable-baselines3==2.8.0a4
+wandb==0.25.1
