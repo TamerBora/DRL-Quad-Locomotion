@@ -57,6 +57,10 @@ parser.add_argument(
     "--checkpoint", type=str, default=None,
     help="Path to a checkpoint directory to resume from.",
 )
+parser.add_argument(
+    "--guide_reward_alpha", type=float, default=1.0,
+    help="α: weight of the height-gain bonus added to the guide actor's reward only.",
+)
 AppLauncher.add_app_launcher_args(parser)
 args_cli, _ = parser.parse_known_args()
 
@@ -331,6 +335,7 @@ def main() -> None:
 
     # ── Initial reset ────────────────────────────────────────────────────────
     policy_obs, guide_obs, env_info = env.reset(random_start_init=True)
+    prev_base_height = env._isaac_env.scene["robot"].data.root_pos_w[:, 2].cpu().numpy().copy()
 
     agent = FlashGSACAgent(
         observation_space=env.single_observation_space,
@@ -383,12 +388,14 @@ def main() -> None:
             # ── Environment step ─────────────────────────────────────────────
             next_policy_obs, next_guide_obs, rewards, terminated, truncated, infos = env.step(actions)
 
+            # ── Height-gain bonus for guide reward ───────────────────────────
+            # Read base height after the step (post-reset for done envs, which is
+            # fine — their guide_reward is masked by (1-done) in the Bellman target).
+            next_base_height = env._isaac_env.scene["robot"].data.root_pos_w[:, 2].cpu().numpy()
+            height_gain      = np.maximum(next_base_height - prev_base_height, 0.0)
+            guide_reward     = rewards + args_cli.guide_reward_alpha * height_gain
+
             # ── Build buffer transition ──────────────────────────────────────
-            # For done envs, IsaacLab auto-resets and overwrites next_obs.
-            # Use the pre-reset terminal obs (stored in infos["final_obs"]) so
-            # the buffer stores the correct terminal observation.
-            # Guide obs is masked by (1-done) in the Bellman target, so using
-            # the post-reset guide obs for done envs has no mathematical effect.
             done_mask = terminated | truncated
             next_buf_obs       = next_policy_obs.copy()
             next_buf_guide_obs = next_guide_obs.copy()
@@ -404,6 +411,7 @@ def main() -> None:
                 "next_observation":       next_buf_obs,
                 "guide_observation":      current_guide_obs,
                 "guide_next_observation": next_buf_guide_obs,
+                "guide_reward":           guide_reward,
             }
             agent.process_transition(transition)
 
@@ -411,9 +419,10 @@ def main() -> None:
             # for done envs) so sample_actions() gets the live obs.
             transition["next_observation"] = next_policy_obs
 
-            # Shift guide obs forward for the next step.
+            # Shift guide obs and height forward for the next step.
             policy_obs        = next_policy_obs
             current_guide_obs = next_guide_obs
+            prev_base_height  = next_base_height
 
             # ── Episode tracking ─────────────────────────────────────────────
             ep_rew_buf += rewards
@@ -440,9 +449,10 @@ def main() -> None:
                 log_dict: dict[str, Any] = {
                     k: float(np.mean(vals)) for k, vals in avg_meter.items() if vals
                 }
-                log_dict["env_step"]    = env_step
-                log_dict["fps"]         = env_step / elapsed
-                log_dict["update_step"] = update_step
+                log_dict["env_step"]              = env_step
+                log_dict["fps"]                   = env_step / elapsed
+                log_dict["update_step"]           = update_step
+                log_dict["guide/height_gain_mean"] = float(height_gain.mean())
 
                 if completed_ep_rews:
                     log_dict["rollout/ep_rew_mean"] = float(np.mean(completed_ep_rews))

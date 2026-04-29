@@ -62,24 +62,36 @@ class GuidedTorchUniformBuffer(TorchUniformBuffer):
         self._guide_next_observations = torch.empty(
             (m, self._guide_obs_dim), dtype=torch.float32, device=self._device, pin_memory=pin
         )
+        # guide_reward is a per-step shaped reward used only for the guide's critic update.
+        # Stored separately so the control actor's reward is never affected.
+        self._guide_rewards = torch.empty(
+            (m,), dtype=torch.float32, device=self._device, pin_memory=pin
+        )
 
     def _get_n_step_prev_transition(self) -> Batch:
         # Let the parent compute the n-step reward / terminated / next_observation.
         result = super()._get_n_step_prev_transition()
 
+        curr = self._n_step_transitions[-1]  # newest transition
+
         # Propagate guide_next_observation through done steps — identical logic to
         # how the parent propagates next_observation.
-        curr = self._n_step_transitions[-1]  # newest transition
         n_step_guide_next_obs = curr["guide_next_observation"].clone()
-
         for n_step_idx in reversed(range(self._n_step - 1)):
             t = self._n_step_transitions[n_step_idx]
             done_mask = t["terminated"].bool() | t["truncated"].bool()
             n_step_guide_next_obs[done_mask] = t["guide_next_observation"][done_mask]
-
-        # guide_observation (current) comes from the oldest transition automatically
-        # because `result` IS self._n_step_transitions[0].
         result["guide_next_observation"] = n_step_guide_next_obs
+
+        # Accumulate n-step guide_reward — same discounting logic as the parent
+        # applies to the regular reward.
+        n_step_guide_reward = curr["guide_reward"].clone()
+        for n_step_idx in reversed(range(self._n_step - 1)):
+            t = self._n_step_transitions[n_step_idx]
+            done = (t["terminated"].bool() | t["truncated"].bool()).float()
+            n_step_guide_reward = t["guide_reward"] + self._gamma * n_step_guide_reward * (1 - done)
+        result["guide_reward"] = n_step_guide_reward
+
         return result
 
     def add(self, transition: Batch) -> None:
@@ -108,6 +120,7 @@ class GuidedTorchUniformBuffer(TorchUniformBuffer):
             self._truncateds[idxs]              = n_step_prev["truncated"].to(self._truncateds.dtype)
             self._guide_observations[idxs]      = n_step_prev["guide_observation"].to(torch.float32)
             self._guide_next_observations[idxs] = n_step_prev["guide_next_observation"].to(torch.float32)
+            self._guide_rewards[idxs]           = n_step_prev["guide_reward"].to(torch.float32)
 
             self._num_in_buffer = min(self._num_in_buffer + add_batch_size, self._max_length)
             self._current_idx = (self._current_idx + add_batch_size) % self._max_length
@@ -127,4 +140,5 @@ class GuidedTorchUniformBuffer(TorchUniformBuffer):
             "next_observation":       self._next_observations[idxs],
             "guide_observation":      self._guide_observations[idxs],
             "guide_next_observation": self._guide_next_observations[idxs],
+            "guide_reward":           self._guide_rewards[idxs],
         }

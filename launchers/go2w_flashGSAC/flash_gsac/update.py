@@ -292,7 +292,7 @@ def update_critic(
 
             target_probs = _compute_categorical_td_target(
                 target_log_probs=next_q_logprob,
-                reward=batch["reward"],
+                reward=batch["guide_reward"],  # shaped: env reward + α·height_gain
                 done=batch["terminated"],
                 actor_entropy=next_actor_entropy,
                 gamma=gamma ** n_step,
