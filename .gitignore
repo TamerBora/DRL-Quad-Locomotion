@@ -17,9 +17,15 @@ robot_lab/
 launchers/*
 !launchers/go2w_SAC_sbx/
 !launchers/go2w_GSAC_sbx/
+!launchers/go2w_flashsac/
 !launchers/sbx_source/
 launchers/sbx_source/*
 !launchers/sbx_source/gsac/
+
+# Exclude go2w_flashsac runtime artifacts and the cloned FlashSAC repo
+launchers/go2w_flashsac/FlashSAC/
+launchers/go2w_flashsac/logs/
+launchers/go2w_flashsac/wandb/
 
 # Exclude logs (model checkpoints, tensorboard — too large)
 launchers/go2w_SAC_sbx/logs/
