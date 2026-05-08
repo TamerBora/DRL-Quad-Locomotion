@@ -3,6 +3,8 @@
 # ─── Section 1: stdlib + sys.path setup ─────────────────────────────────────
 # All non-stdlib imports happen AFTER AppLauncher launches below.
 import argparse
+import collections
+import copy
 import dataclasses
 import json
 import os
@@ -178,6 +180,12 @@ def main() -> None:
     )
     Path(log_dir).mkdir(parents=True, exist_ok=True)
     Path(log_dir, "command.txt").write_text(" ".join(sys.argv))
+    # Sidecar for play.py: which observations were restored to the
+    # policy obs (so the loaded actor's input dim matches at playback).
+    Path(log_dir, "env_overrides.json").write_text(json.dumps({
+        "restore_lin_vel": True,
+        "restore_height_scan": False,
+    }, indent=2))
     print(f"[FlashSAC] Logging to: {log_dir}")
 
     # WandB
@@ -199,6 +207,76 @@ def main() -> None:
     device_str: str = getattr(args_cli, "device", None) or "cuda:0"
     env_cfg = parse_env_cfg(args_cli.task, device=device_str, num_envs=args_cli.num_envs)
     env_cfg.seed = seed
+
+    # ── Stability overrides (must happen BEFORE gym.make) ────────────────
+    # Yaw-only reset. rough_env_cfg replaces the parent's pose_range with
+    # full ±π roll/pitch, which spawns ~50% of episodes upside-down — and
+    # `terminations.illegal_contact` is None so they don't terminate early,
+    # flooding the buffer with thrashing transitions.
+    env_cfg.events.randomize_reset_base.params["pose_range"] = {
+        "x": (-0.5, 0.5),
+        "y": (-0.5, 0.5),
+        "z": (0.0, 0.2),
+        "yaw": (-3.14, 3.14),
+    }
+    # Zero out roll/pitch angular velocity at spawn so the robot doesn't
+    # tip on the first few timesteps. Linear velocity and yaw rate stay
+    # noisy for domain-randomisation.
+    env_cfg.events.randomize_reset_base.params["velocity_range"] = {
+        "x": (-0.5, 0.5),
+        "y": (-0.5, 0.5),
+        "z": (-0.5, 0.5),
+        "roll": (0.0, 0.0),
+        "pitch": (0.0, 0.0),
+        "yaw": (-0.5, 0.5),
+    }
+    # Per-episode actuator gain randomisation (×[0.5, 2.0] log-uniform)
+    # creates a multimodal Q-landscape that SAC's single critic struggles
+    # with. Re-enable with a tighter range like [0.8, 1.25] post-convergence
+    # to recover sim-to-real robustness.
+    env_cfg.events.randomize_actuator_gains = None
+    # 2× the env-side action-rate penalty; pairs with the (disabled)
+    # actor_smooth_beta below for jitter control.
+    env_cfg.rewards.action_rate_l2.weight = -0.02
+
+    # Curriculum: spawn ALL envs at the easiest terrain (level 0) and
+    # let the per-env curriculum promote them upward as they walk far
+    # enough. Default `max_init_terrain_level=5` spreads spawns
+    # uniformly over levels 0–5, which is too hard for an under-trained
+    # policy: robots that spawn high can't make distance, get demoted,
+    # learn the timid "stand still on easy ground" optimum, and the
+    # mean terrain_levels graph trends *down* even as ep_rew climbs.
+    env_cfg.scene.terrain.max_init_terrain_level = 0
+
+    # One command per episode. Default `(10.0, 10.0)` resamples mid-episode,
+    # so ~25 % of 20-s episodes get a near-reversed second command and the
+    # robot ends near its spawn → distance < 4 m → demoted by
+    # `terrain_levels_vel`. With a single command for the full 20 s, a
+    # competent robot only needs ~0.2 m/s sustained net displacement to
+    # promote.
+    env_cfg.commands.base_velocity.resampling_time_range = (20.0, 20.0)
+
+    # Tracking weight bump (was 3.0 / 1.5 in the baseline rough_env_cfg).
+    # `track_lin_vel_xy_exp = exp(-err²/0.25)`: at err=0.7 (current plateau)
+    # the reward is 0.14, not zero — sloppy tracking is too tolerable. A
+    # higher coefficient steepens the gradient, which is what we need to
+    # push lin_vel_tracking_error past its 0.7 stuck point.
+    env_cfg.rewards.track_lin_vel_xy_exp.weight = 5.0
+    env_cfg.rewards.track_ang_vel_z_exp.weight = 2.5
+
+    # Restore base_lin_vel to the policy observation. rough_env_cfg sets
+    # `observations.policy.base_lin_vel = None` for sim-to-real (real
+    # robots must infer lin_vel from IMU integration), but PPO succeeds
+    # because its asymmetric critic (CriticCfg in velocity_env_cfg.py)
+    # *does* have access to base_lin_vel — so the critic can score
+    # tracking-relevant actions correctly. FlashSAC's symmetric setup
+    # gives neither network this info, which is the structural cause of
+    # the lin_vel_tracking_error plateau at 0.65–0.7 across three
+    # independent fix attempts (curriculum, reward shape, exploration).
+    env_cfg.observations.policy.base_lin_vel = copy.deepcopy(
+        env_cfg.observations.critic.base_lin_vel
+    )
+
     raw_env = gym.make(args_cli.task, cfg=env_cfg, render_mode=None)
     env = Go2WIsaacEnvWrapper(raw_env, device=device_str)
 
@@ -227,7 +305,7 @@ def main() -> None:
         device_type=device_str,
         # Buffer: 500K × ~obs_dim floats fits well within 8 GB
         buffer_max_length=500_000,
-        buffer_min_length=10_000,
+        buffer_min_length=50_000,
         buffer_device_type="cuda",
         sample_batch_size=1024,
         # Learning rate schedule
@@ -238,10 +316,17 @@ def main() -> None:
         learning_rate_warmup_step=warmup_step,
         learning_rate_decay_rate=decay_rate,
         learning_rate_decay_step=decay_step,
-        # Actor (matches FlashSAC default)
+        # Actor — (2, 128) is the v4 configuration that achieved terrain
+        # level 5.5 peak and lin_vel_tracking_error 0.4. Bumping to (3, 256)
+        # is reserved for v5 (post-v4 capacity experiment).
         actor_num_blocks=2,
         actor_hidden_dim=128,
         actor_bc_alpha=0.0,
+        # Loss-side action smoothness disabled — env-side action_rate_l2
+        # at -0.02 is enough to keep actions smooth, and stacking both
+        # was over-penalising movement (policy converged to standing
+        # still with terrain levels regressing 3 → 0).
+        actor_smooth_beta=0.0,
         actor_noise_zeta_mu=2.0,
         actor_noise_zeta_max=16,
         actor_update_period=2,
@@ -253,8 +338,16 @@ def main() -> None:
         critic_max_v=5.0,
         critic_target_update_tau=0.01,
         # Temperature
+        # Bumped from σ=0.08 (target -16, std SAC convention) to σ=0.12
+        # (target -11.2). At σ=0.08 the policy plateaued at lin_vel
+        # tracking error 0.7 and terrain ~2 — entropy was already at
+        # target so α stayed at ~0.005 and the entropy bonus contributed
+        # <1% of the actor gradient. With target -11.2, current entropy
+        # (-17.7) sits ~6 nats below target → α grows to ~0.05–0.1 and
+        # forces the policy to widen its action distribution. Volatility
+        # is bounded because log_std_max=0.0 caps std at 1.0.
         temp_initial_value=0.01,
-        temp_target_sigma=0.15,
+        temp_target_sigma=0.12,
         temp_target_entropy=0.0,  # overridden by FlashSACAgent.__init__ from temp_target_sigma
         # RL
         gamma=0.99,
@@ -290,11 +383,14 @@ def main() -> None:
     last_ckpt_step = 0
     update_step = 0
 
-    # Per-env episode accumulators
+    # Per-env episode accumulators. Use a sliding window over the last 100
+    # completed episodes (SB3 / RSL-RL convention) so the displayed
+    # rollout/ep_rew_mean reflects sustained policy quality, not the noise
+    # of 4–10 episodes that happened to terminate in the last log window.
     ep_rew_buf = np.zeros(num_envs, dtype=np.float32)
     ep_len_buf = np.zeros(num_envs, dtype=np.int32)
-    completed_ep_rews: list[float] = []
-    completed_ep_lens: list[int] = []
+    completed_ep_rews: collections.deque[float] = collections.deque(maxlen=100)
+    completed_ep_lens: collections.deque[int] = collections.deque(maxlen=100)
 
     try:
         for interaction_step in range(1, total_interaction_steps + 1):
@@ -365,8 +461,6 @@ def main() -> None:
                 if completed_ep_rews:
                     log_dict["rollout/ep_rew_mean"] = float(np.mean(completed_ep_rews))
                     log_dict["rollout/ep_len_mean"] = float(np.mean(completed_ep_lens))
-                    completed_ep_rews.clear()
-                    completed_ep_lens.clear()
 
                 # Isaac Lab reward breakdown and robot state
                 try:

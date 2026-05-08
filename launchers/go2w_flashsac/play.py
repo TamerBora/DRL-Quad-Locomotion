@@ -2,6 +2,7 @@
 
 # ─── Section 1: stdlib + sys.path setup ─────────────────────────────────────
 import argparse
+import copy
 import dataclasses
 import json
 import os
@@ -41,6 +42,9 @@ parser.add_argument("--real_time", action="store_true", default=False,
 parser.add_argument("--cmd", type=float, nargs=3, default=None,
                     metavar=("LIN_X", "LIN_Y", "ANG_Z"),
                     help="Override velocity command every step, e.g. --cmd 1.0 0.0 0.0")
+parser.add_argument("--camera_switch_interval", type=float, default=0.0,
+                    help="If >0 and num_envs>1, cycle the viewport camera to the next "
+                         "robot every N real-time seconds. 0 = stay on env 0.")
 AppLauncher.add_app_launcher_args(parser)
 args_cli, _ = parser.parse_known_args()
 
@@ -158,6 +162,25 @@ def _load_config(ckpt_dir: Path) -> FlashSACConfig:
     return FlashSACConfig(**raw)
 
 
+def _infer_actor_input_dim(actor_path: Path) -> int | None:
+    """Read the actor's expected obs dim from its BatchNorm running_mean shape.
+
+    Returns None if the key isn't found (e.g. a new architecture without
+    UnitBatchNorm at the embedder).
+    """
+    try:
+        ckpt = torch.load(actor_path, map_location="cpu", weights_only=False)
+    except (FileNotFoundError, RuntimeError):
+        return None
+    state = ckpt.get("network_state_dict", ckpt)
+    for key, tensor in state.items():
+        # Match either 'embedder.norm.running_mean' or compiled-module
+        # variants like '_orig_mod.embedder.norm.running_mean'.
+        if key.endswith("embedder.norm.running_mean"):
+            return int(tensor.shape[0])
+    return None
+
+
 # ─── Section 5: env wrapper (same interface as train.py) ────────────────────
 
 class Go2WIsaacEnvWrapper:
@@ -181,7 +204,9 @@ class Go2WIsaacEnvWrapper:
         self.action_space = batch_space(self.single_action_space, self.num_envs)
 
     def reset(self) -> tuple[np.ndarray, dict[str, Any]]:
-        obs_dict, _ = self._isaac_env.reset()
+        # Go through self._env so any wrappers (e.g. RecordVideo when
+        # --video is set) see the reset and start a new recording.
+        obs_dict, _ = self._env.reset()
         env_info: dict[str, Any] = {
             "actor_observation_size": self.single_observation_space.shape,
             "asymmetric_obs": False,
@@ -191,7 +216,10 @@ class Go2WIsaacEnvWrapper:
     def step(self, actions: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict[str, Any]]:
         torch_actions = torch.as_tensor(actions, dtype=torch.float32, device=self.device)
         torch_actions = torch.clamp(torch_actions, -1.0, 1.0) * ACTION_BOUNDS
-        obs_dict, rew, terminated, truncated, _ = self._isaac_env.step(torch_actions)
+        # Go through self._env (wrapped chain) so RecordVideo sees each step
+        # and captures a frame; self._isaac_env is the unwrapped base and
+        # would skip the wrapper.
+        obs_dict, rew, terminated, truncated, _ = self._env.step(torch_actions)
         return (
             obs_dict["policy"].cpu().numpy(),
             rew.cpu().numpy(),
@@ -201,7 +229,9 @@ class Go2WIsaacEnvWrapper:
         )
 
     def close(self) -> None:
-        pass
+        # Propagate so gym.wrappers.RecordVideo (when --video is set)
+        # finalises the MP4 and the underlying ManagerBasedRLEnv tears down.
+        self._env.close()
 
 
 # ─── Section 6: main ────────────────────────────────────────────────────────
@@ -226,6 +256,88 @@ def main() -> None:
     # Create environment
     env_cfg = parse_env_cfg(args_cli.task, device=device_str, num_envs=args_cli.num_envs)
     env_cfg.seed = args_cli.seed
+
+    # Make the viewport camera follow env 0's robot. Default ViewerCfg
+    # uses origin_type="world" and a fixed eye at (7.5, 7.5, 7.5), so the
+    # robot walks out of frame after a few seconds. With asset_root + a
+    # 3 m chase offset, the camera stays locked on the robot's base for
+    # the whole episode.
+    env_cfg.viewer.origin_type = "asset_root"
+    env_cfg.viewer.asset_name = "robot"
+    env_cfg.viewer.env_index = 0
+    env_cfg.viewer.eye = (3.0, 3.0, 1.5)
+    env_cfg.viewer.lookat = (0.0, 0.0, 0.4)
+
+    # ── Mirror train.py's env overrides so eval matches training ────────
+    # The trained policy never saw `randomize_actuator_gains`, was warm-started
+    # on terrain level 0, and operated under one command per episode. Running
+    # eval against the default rough_env_cfg exposes it to all of these at
+    # once and the printed returns crash to near zero. This block makes
+    # play.py reproduce the training distribution.
+    env_cfg.events.randomize_reset_base.params["pose_range"] = {
+        "x": (-0.5, 0.5),
+        "y": (-0.5, 0.5),
+        "z": (0.0, 0.2),
+        "yaw": (-3.14, 3.14),
+    }
+    env_cfg.events.randomize_reset_base.params["velocity_range"] = {
+        "x": (-0.5, 0.5),
+        "y": (-0.5, 0.5),
+        "z": (-0.5, 0.5),
+        "roll": (0.0, 0.0),
+        "pitch": (0.0, 0.0),
+        "yaw": (-0.5, 0.5),
+    }
+    env_cfg.events.randomize_actuator_gains = None
+    env_cfg.scene.terrain.max_init_terrain_level = 0
+    env_cfg.commands.base_velocity.resampling_time_range = (20.0, 20.0)
+    env_cfg.rewards.action_rate_l2.weight = -0.02
+    env_cfg.rewards.track_lin_vel_xy_exp.weight = 5.0
+    env_cfg.rewards.track_ang_vel_z_exp.weight = 2.5
+
+    # Match the actor's training-time obs shape. train.py writes an
+    # `env_overrides.json` sidecar listing which obs terms it restored
+    # to the policy group. For older checkpoints without the sidecar,
+    # *infer* by reading the actor's expected input dim straight from
+    # the checkpoint's BatchNorm running_mean shape — that way pre-fix
+    # checkpoints (no lin_vel) and post-fix checkpoints (lin_vel only,
+    # or lin_vel + height_scan) all just work.
+    run_dir = ckpt_dir.parent
+    overrides_path = run_dir / "env_overrides.json"
+    if overrides_path.exists():
+        env_overrides = json.loads(overrides_path.read_text())
+        print(f"[FlashSAC] Loaded env_overrides.json: {env_overrides}")
+    else:
+        ckpt_actor_dim = _infer_actor_input_dim(ckpt_dir / "actor.pt")
+        # Base policy obs (rough_env_cfg disables lin_vel and height_scan):
+        #   base_ang_vel(3) + projected_gravity(3) + velocity_commands(3)
+        #   + joint_pos(12 leg-only) + joint_vel(16) + last_actions(16) = 53
+        # +3 if lin_vel restored → 56;  +160 (16×10) if height_scan → 213.
+        # We pick the closest legal combination to the checkpoint's input.
+        base = 53 + 4  # +4 fudge for any task-config drift; we still match exactly below
+        candidates = {
+            (False, False): 0,
+            (True,  False): 3,
+            (True,  True):  3 + 160,
+            (False, True):  160,
+        }
+        if ckpt_actor_dim is None:
+            print("[FlashSAC] Could not read checkpoint input dim — defaulting to lin_vel only.")
+            env_overrides = {"restore_lin_vel": True, "restore_height_scan": False}
+        else:
+            best = min(candidates, key=lambda k: abs(ckpt_actor_dim - (base + candidates[k])))
+            env_overrides = {"restore_lin_vel": best[0], "restore_height_scan": best[1]}
+            print(f"[FlashSAC] Inferred from actor.pt (input_dim={ckpt_actor_dim}): {env_overrides}")
+
+    if env_overrides.get("restore_lin_vel"):
+        env_cfg.observations.policy.base_lin_vel = copy.deepcopy(
+            env_cfg.observations.critic.base_lin_vel
+        )
+    if env_overrides.get("restore_height_scan"):
+        env_cfg.observations.policy.height_scan = copy.deepcopy(
+            env_cfg.observations.critic.height_scan
+        )
+
     raw_env = gym.make(args_cli.task, cfg=env_cfg, render_mode=None)
     env = Go2WIsaacEnvWrapper(raw_env, device=device_str)
 
@@ -261,8 +373,30 @@ def main() -> None:
 
     print(f"[FlashSAC] Playing {args_cli.num_episodes} episodes with {env.num_envs} envs...")
 
+    # Camera-switch state. If --camera_switch_interval > 0 and we have >1
+    # env, cycle the viewport's tracked env_index in real time so each robot
+    # gets equal screen time.
+    camera_env_idx = 0
+    camera_last_switch = time.time()
+    do_camera_switch = (args_cli.camera_switch_interval > 0.0) and (env.num_envs > 1)
+    if do_camera_switch:
+        print(f"[FlashSAC] Camera will cycle every {args_cli.camera_switch_interval:.0f}s "
+              f"across {env.num_envs} robots.")
+
     while simulation_app.is_running() and completed < args_cli.num_episodes:
         step_start = time.time()
+
+        if do_camera_switch and (time.time() - camera_last_switch) >= args_cli.camera_switch_interval:
+            camera_env_idx = (camera_env_idx + 1) % env.num_envs
+            try:
+                env._isaac_env.viewport_camera_controller.set_view_env_index(camera_env_idx)
+                print(f"  [camera] now following env {camera_env_idx}")
+            except (AttributeError, RuntimeError):
+                # ViewportCameraController API surface varies across IsaacLab
+                # versions; if set_view_env_index isn't there, fall back to
+                # mutating the cfg directly (the controller re-reads it).
+                env._isaac_env.cfg.viewer.env_index = camera_env_idx
+            camera_last_switch = time.time()
 
         if cmd_override is not None:
             env._isaac_env.command_manager.get_command("base_velocity")[:] = cmd_override
@@ -301,5 +435,11 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
-    simulation_app.close()
+    try:
+        main()
+    finally:
+        simulation_app.close()
+        # Isaac Sim's CARB layer occasionally leaves background threads alive
+        # (USD asset loaders, render workers) so the process hangs after
+        # main() returns. Force-exit to guarantee termination.
+        os._exit(0)
