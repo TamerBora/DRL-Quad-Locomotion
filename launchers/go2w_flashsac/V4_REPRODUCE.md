@@ -51,19 +51,41 @@ git clone https://github.com/TamerBora/DRL-Quad-Locomotion.git
 cd DRL-Quad-Locomotion
 ```
 
-### 2. Clone upstream FlashSAC and apply the v4 patches
+### 2. Pin external dependency commits
+
+v4 was trained against these exact upstream commits — use them for byte-identical reproduction:
+
+| dependency | commit | URL |
+|---|---|---|
+| FlashSAC | `87edc9061150ae9e962dd84e6544e27a1554b3ab` | https://github.com/Holiday-Robot/FlashSAC |
+| robot_lab | `881036f05b5d793bb8782e56dbffb4fd6062c66d` | https://github.com/fan-ziqi/robot_lab |
+| Isaac Lab | tested with 0.46.5 (Isaac Sim 4.5.x) | https://isaac-sim.github.io/IsaacLab/ |
+
+### 3. Clone upstream FlashSAC and apply the v4 patches
 
 ```bash
-cd go2w_flashsac
+cd launchers/go2w_flashsac
 git clone https://github.com/Holiday-Robot/FlashSAC.git
 cd FlashSAC
+git checkout 87edc9061150ae9e962dd84e6544e27a1554b3ab
 for p in ../flashsac_patches/*.patch; do
     git apply "$p"
 done
 cd ..
 ```
 
-### 3. Install dependencies
+### 4. Clone robot_lab and apply task configs
+
+```bash
+cd ~  # or wherever you keep external repos
+git clone https://github.com/fan-ziqi/robot_lab.git
+cd robot_lab
+git checkout 881036f05b5d793bb8782e56dbffb4fd6062c66d
+cd <DRL-Quad-Locomotion repo root>
+ROBOT_LAB_DIR=$HOME/robot_lab ./setup_task_configs.sh
+```
+
+### 5. Install dependencies
 
 Follow [Isaac Lab installation](https://isaac-sim.github.io/IsaacLab/) (Isaac Sim 4.5+, Python 3.11), then:
 
@@ -71,7 +93,32 @@ Follow [Isaac Lab installation](https://isaac-sim.github.io/IsaacLab/) (Isaac Si
 pip install -r requirements.txt
 ```
 
-### 4. Train v4 (≈ 4 h on RTX 4070 8 GB)
+### 6. Play the pre-trained v4 checkpoint
+
+The repo ships the v4 policy weights for inference (3.3 MB, under
+`launchers/go2w_flashsac/v4_checkpoint/`):
+
+```bash
+python launchers/go2w_flashsac/play.py \
+  --checkpoint launchers/go2w_flashsac/v4_checkpoint/step_19998720 \
+  --num_envs 1 --num_episodes 5 --device cuda:0 --headless
+```
+
+Or render a video with `create_video.py` (needs `Xvfb` + `ffmpeg`):
+
+```bash
+python launchers/go2w_flashsac/create_video.py \
+  launchers/go2w_flashsac/v4_checkpoint/step_19998720 \
+  --num_envs 3 --duration 60
+```
+
+> **Note**: only the inference checkpoint files are tracked
+> (`actor.pt`, `temperature.pt`, `reward_normalizer.pt`, `agent_state.pt`,
+> `config.json`, `env_overrides.json`, `command.txt`). The critic files
+> (`critic.pt` 26 MB, `target_critic.pt` 8.5 MB) are gitignored — they
+> are only required for **resuming training**, not for playback.
+
+### 7. Train v4 from scratch (≈ 4 h on RTX 4070 8 GB)
 
 ```bash
 python go2w_flashsac/train.py \

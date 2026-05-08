@@ -1,0 +1,1 @@
+go2w_flashsac/train.py --task RobotLab-Isaac-Velocity-Rough-Unitree-Go2W-v0 --num_envs 256 --total_steps 50_000_000 --seed 42 --wandb_name flashsac_full_v4 --headless

@@ -52,3 +52,11 @@ __pycache__/
 *.zip
 *.pt
 *.pth
+
+# Whitelist the pinned v4 inference checkpoint (3.3 MB, needed to revert to
+# the best SAC policy without retraining). Critic files are not whitelisted
+# — they are 35 MB and only useful for resuming training.
+!launchers/go2w_flashsac/v4_checkpoint/step_19998720/actor.pt
+!launchers/go2w_flashsac/v4_checkpoint/step_19998720/temperature.pt
+!launchers/go2w_flashsac/v4_checkpoint/step_19998720/reward_normalizer.pt
+!launchers/go2w_flashsac/v4_checkpoint/step_19998720/agent_state.pt
