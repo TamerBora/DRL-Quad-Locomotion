@@ -4,3 +4,7 @@ __pycache__/
 *.pyc
 outputs/
 exported/
+
+# upstream paper media — not algorithmic, kept local but not vendored
+FlashSAC/docs/
+FlashSAC/results/
