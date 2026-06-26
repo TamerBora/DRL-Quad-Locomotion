@@ -80,12 +80,19 @@ from isaaclab_tasks.utils.parse_cfg import parse_env_cfg  # noqa: E402
 # Task registration — importing go2_sac_env_cfg registers the SAC task id
 # (and, via its robot_lab import, the original Go2 ids too).
 if _LAB_MACHINE:
-    import QuadLoco  # type: ignore  # noqa: F401
+    try:
+        import QuadLoco  # type: ignore  # noqa: F401  (legacy lab pkg; optional)
+    except Exception:
+        pass
 import go2_sac_env_cfg  # noqa: F401, E402  (registers RobotLab-...-Go2-SAC-v0)
 try:
     import fablequadruped.tasks  # noqa: F401, E402  (registers Fable-Go2-* for --task Fable-...)
 except Exception as _e:  # noqa: BLE001
     print(f"[train] fablequadruped.tasks not importable ({_e}); Fable tasks unavailable.")
+try:
+    import quadruped_lab.tasks  # noqa: F401  (registers QuadrupedLab-...-Fable-v0 on the lab PC)
+except Exception as _e:  # noqa: BLE001
+    print(f"[train] quadruped_lab.tasks not importable ({_e}); QuadrupedLab tasks unavailable.")
 
 from flash_rl.agents.flashSAC.agent import FlashSACAgent, FlashSACConfig  # noqa: E402
 
