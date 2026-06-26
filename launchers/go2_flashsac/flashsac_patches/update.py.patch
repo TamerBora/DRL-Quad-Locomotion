@@ -1,0 +1,103 @@
+diff --git a/flash_rl/agents/flashSAC/update.py b/flash_rl/agents/flashSAC/update.py
+index 2686b06..a019657 100644
+--- a/flash_rl/agents/flashSAC/update.py
++++ b/flash_rl/agents/flashSAC/update.py
+@@ -84,6 +84,7 @@ def update_actor(
+     temperature: Network,
+     batch: Batch,
+     bc_alpha: float,
++    smooth_beta: float,
+     device: torch.device,
+     use_amp: bool,
+     grad_scaler: Optional[GradScaler],
+@@ -96,6 +97,8 @@ def update_actor(
+         temperature: Temperature network.
+         batch: Batch of transitions.
+         bc_alpha: BC regularization coefficient.
++        smooth_beta: Coefficient for the action-rate smoothness term
++            ``β·E[Σ_dim(π(s') − π(s))²]``. Set to 0 to disable.
+         device: Device to use.
+         use_amp: Whether to use automatic mixed precision.
+         grad_scaler: GradScaler for FP16 AMP.
+@@ -110,6 +113,7 @@ def update_actor(
+         log_probs_all = info["log_prob"]
+ 
+         actions = torch.chunk(actions_all, 2, dim=0)[0]
++        next_actions = torch.chunk(actions_all, 2, dim=0)[1]
+         log_probs = torch.chunk(log_probs_all, 2, dim=0)[0]
+ 
+         # Disable critic gradients to prevent CUDA graph overwriting
+@@ -131,6 +135,12 @@ def update_actor(
+             bc_loss = ((actions - batch["action"]) ** 2).mean()
+             actor_loss = actor_loss + bc_alpha * q_abs * bc_loss
+ 
++        # Actor-side action-rate smoothness on policy outputs at (s, s').
++        # The forward over [obs, next_obs] is already paid for above.
++        smooth_loss = ((next_actions - actions) ** 2).sum(dim=-1).mean()
++        if smooth_beta > 0.0:
++            actor_loss = actor_loss + smooth_beta * smooth_loss
++
+         entropy = -log_probs.mean()
+         mean_action = actions.mean()
+ 
+@@ -140,10 +150,13 @@ def update_actor(
+     if use_amp:
+         assert grad_scaler is not None
+         grad_scaler.scale(actor_loss).backward()
++        grad_scaler.unscale_(actor.optimizer)
++        torch.nn.utils.clip_grad_norm_(actor.network.parameters(), max_norm=1.0)
+         grad_scaler.step(actor.optimizer)
+         grad_scaler.update()
+     else:
+         actor_loss.backward()
++        torch.nn.utils.clip_grad_norm_(actor.network.parameters(), max_norm=1.0)
+         actor.optimizer.step()
+ 
+     # LR scheduler
+@@ -158,6 +171,7 @@ def update_actor(
+         "loss": actor_loss,
+         "entropy": entropy,
+         "mean_action": mean_action,
++        "smooth_loss": smooth_loss,
+     }
+     update_info = add_prefix_to_keys(update_info, "actor")
+ 
+@@ -255,10 +269,13 @@ def update_critic(
+     if use_amp:
+         assert grad_scaler is not None
+         grad_scaler.scale(critic_loss).backward()  # type: ignore
++        grad_scaler.unscale_(critic.optimizer)
++        torch.nn.utils.clip_grad_norm_(critic.network.parameters(), max_norm=10.0)
+         grad_scaler.step(critic.optimizer)
+         grad_scaler.update()
+     else:
+         critic_loss.backward()  # type: ignore
++        torch.nn.utils.clip_grad_norm_(critic.network.parameters(), max_norm=10.0)
+         critic.optimizer.step()
+ 
+     # LR scheduler
+@@ -300,8 +317,13 @@ def update_temperature(
+         target_entropy: Target entropy value.
+     """
+ 
+-    temperature_value = temperature().clone()
+-    temperature_loss = temperature_value * (entropy.detach() - target_entropy).mean()
++    # Standard SAC: loss is log_alpha * (H - H_bar). Going through
++    # `temperature() = exp(log_alpha)` made the gradient on log_alpha equal
++    # to alpha * (H - H_bar), which is ~100x too small at alpha ~ 0.01 and
++    # leaves alpha effectively frozen.
++    log_alpha = temperature.network.log_temp
++    temperature_value = log_alpha.exp().detach()
++    temperature_loss = (log_alpha * (entropy.detach() - target_entropy)).mean()
+ 
+     assert temperature.optimizer is not None
+     temperature.optimizer.zero_grad(set_to_none=True)
+@@ -312,7 +334,7 @@ def update_temperature(
+ 
+     update_info = {
+         "value": temperature_value,
+-        "loss": temperature_loss,
++        "loss": temperature_loss.detach(),
+     }
+     update_info = add_prefix_to_keys(update_info, "temperature")
+ 

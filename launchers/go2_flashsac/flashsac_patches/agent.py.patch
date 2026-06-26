@@ -1,0 +1,23 @@
+diff --git a/flash_rl/agents/flashSAC/agent.py b/flash_rl/agents/flashSAC/agent.py
+index 254e6f5..90af39e 100644
+--- a/flash_rl/agents/flashSAC/agent.py
++++ b/flash_rl/agents/flashSAC/agent.py
+@@ -77,6 +77,10 @@ class FlashSACConfig:
+     load_optimizer: bool
+     load_reward_normalizer: bool
+ 
++    # Actor-side action-rate smoothness coefficient β for
++    # ``β · E[Σ_dim (π(s') − π(s))²]``. 0.0 disables the term.
++    actor_smooth_beta: float = 0.0
++
+ 
+ def _init_flashsac_networks(
+     actor_observation_dim: int,
+@@ -276,6 +280,7 @@ def _update_networks(
+             temperature=temperature,
+             batch=batch,  # type: ignore
+             bc_alpha=cfg.actor_bc_alpha,
++            smooth_beta=cfg.actor_smooth_beta,
+             device=device,
+             use_amp=cfg.use_amp,
+             grad_scaler=grad_scaler,

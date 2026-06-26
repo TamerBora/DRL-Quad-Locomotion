@@ -1,0 +1,15 @@
+diff --git a/flash_rl/agents/flashSAC/layer.py b/flash_rl/agents/flashSAC/layer.py
+index 0c9f4fe..b0c11f4 100644
+--- a/flash_rl/agents/flashSAC/layer.py
++++ b/flash_rl/agents/flashSAC/layer.py
+@@ -113,8 +113,8 @@ class NormalTanhPolicy(nn.Module):
+         self,
+         hidden_dim: int,
+         action_dim: int,
+-        log_std_min: float = -10.0,
+-        log_std_max: float = 2.0,
++        log_std_min: float = -5.0,
++        log_std_max: float = 0.0,
+     ):
+         super().__init__()
+         self.mean_w = UnitLinear(hidden_dim, action_dim)

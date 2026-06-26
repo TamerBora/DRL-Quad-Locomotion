@@ -1,0 +1,97 @@
+# rl_sar config for the Go2 FlashSAC blind-history actor (v6_blindhist).
+#
+# Run:   logs/flashsac/RobotLab-Isaac-Velocity-Rough-Unitree-Go2-SAC-v0/
+#          go2_flashsac_v6_blindhist_2026-06-02_16-18-07/best_terrain/
+#
+# THREE things make this different from the PPO (ppo_go2_lab) config:
+#   1. 225-dim observation = 5-frame history of the 45-dim proprio frame.
+#      rl_sar must replay IsaacLab's group-history layout: TERM-major,
+#      each term oldest->newest. That is exactly:
+#        observations_history_priority: "term"
+#        observations_history: [4, 3, 2, 1, 0]   # oldest(4) -> newest(0)
+#   2. PD gains are Kp=25 / Kd=0.5 (UNITREE_GO2_CFG "legs" DCMotorCfg),
+#      NOT the 20/0.5 the old ppo_go2_lab config used.
+#   3. The exported actor.ts already applies tanh + the per-joint asymmetric
+#      action bounds (a = b + c*tanh(mean)). So action_scale stays STOCK
+#      0.125/0.25 — rl_sar just does q_target = default + action_scale*action.
+#      (No x5 absorption like GSAC v12; the bounds are baked into the export.)
+#
+# Install (conda OFF):
+#   RL_SAR=~/ros2_ws/src/rl_sar
+#   mkdir -p $RL_SAR/policy/go2/flashsac_v6
+#   cp config.yaml $RL_SAR/policy/go2/flashsac_v6/config.yaml
+#   # actor.ts -> policy.pt  (rl_sar dispatches on extension; .ts is rejected,
+#   #  but TorchScript loads fine as .pt via torch::jit::load)
+#   cp <run>/best_terrain/exported/actor.ts $RL_SAR/policy/go2/flashsac_v6/policy.pt
+
+go2/flashsac_v6:
+  model_name: "policy.pt"
+
+  # 45-dim proprio frame: ang_vel(3)+gravity_vec(3)+commands(3)+dof_pos(12)+dof_vel(12)+actions(12).
+  # NO lin_vel, NO height_scan (blind actor). Stacked x5 -> 225 via history below.
+  num_observations: 225
+  observations: ["ang_vel", "gravity_vec", "commands", "dof_pos", "dof_vel", "actions"]
+  # IsaacLab group history (history_length=5, flatten_history_dim=True) flattens
+  # TERM-major, each term oldest->newest. rl_sar "term" priority with ids
+  # [4,3,2,1,0] reproduces it bit-for-bit (id 0 = newest frame, id 4 = oldest).
+  observations_history: [4, 3, 2, 1, 0]
+  observations_history_priority: "term"
+
+  clip_obs: 100.0
+  clip_actions_lower: [-100.0, -100.0, -100.0,
+                       -100.0, -100.0, -100.0,
+                       -100.0, -100.0, -100.0,
+                       -100.0, -100.0, -100.0]
+  clip_actions_upper: [100.0, 100.0, 100.0,
+                       100.0, 100.0, 100.0,
+                       100.0, 100.0, 100.0,
+                       100.0, 100.0, 100.0]
+
+  # RL controller PD: UNITREE_GO2_CFG "legs" DCMotorCfg -> Kp=25, Kd=0.5.
+  rl_kp: [25.0, 25.0, 25.0,
+          25.0, 25.0, 25.0,
+          25.0, 25.0, 25.0,
+          25.0, 25.0, 25.0]
+  rl_kd: [0.5, 0.5, 0.5,
+          0.5, 0.5, 0.5,
+          0.5, 0.5, 0.5,
+          0.5, 0.5, 0.5]
+  fixed_kp: [80.0, 80.0, 80.0,
+             80.0, 80.0, 80.0,
+             80.0, 80.0, 80.0,
+             80.0, 80.0, 80.0]
+  fixed_kd: [3.0, 3.0, 3.0,
+             3.0, 3.0, 3.0,
+             3.0, 3.0, 3.0,
+             3.0, 3.0, 3.0]
+
+  num_of_dofs: 12
+
+  # Stock per-joint scale (hip 0.125, thigh/calf 0.25). The asymmetric bounds
+  # are already inside actor.ts, so NO extra multiplier here.
+  action_scale: [0.125, 0.25, 0.25,
+                 0.125, 0.25, 0.25,
+                 0.125, 0.25, 0.25,
+                 0.125, 0.25, 0.25]
+  wheel_indices: []
+
+  # Per-term obs scales — must mirror the training cfg exactly.
+  lin_vel_scale: 2.0     # unused (no lin_vel in obs), kept for clarity
+  ang_vel_scale: 0.25
+  dof_pos_scale: 1.0
+  dof_vel_scale: 0.05
+  commands_scale: [1.0, 1.0, 1.0]
+
+  torque_limits: [23.5, 23.5, 23.5,
+                  23.5, 23.5, 23.5,
+                  23.5, 23.5, 23.5,
+                  23.5, 23.5, 23.5]
+
+  # Go2 standing pose: hip=0, thigh=0.80, calf=-1.50.
+  default_dof_pos: [ 0.00, 0.80, -1.50,
+                     0.00, 0.80, -1.50,
+                     0.00, 0.80, -1.50,
+                     0.00, 0.80, -1.50]
+
+  # Identity mapping (policy joint order == base.yaml joint order: FR,FL,RR,RL).
+  joint_mapping: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
