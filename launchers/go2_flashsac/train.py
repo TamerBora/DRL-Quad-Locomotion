@@ -82,6 +82,10 @@ from isaaclab_tasks.utils.parse_cfg import parse_env_cfg  # noqa: E402
 if _LAB_MACHINE:
     import QuadLoco  # type: ignore  # noqa: F401
 import go2_sac_env_cfg  # noqa: F401, E402  (registers RobotLab-...-Go2-SAC-v0)
+try:
+    import fablequadruped.tasks  # noqa: F401, E402  (registers Fable-Go2-* for --task Fable-...)
+except Exception as _e:  # noqa: BLE001
+    print(f"[train] fablequadruped.tasks not importable ({_e}); Fable tasks unavailable.")
 
 from flash_rl.agents.flashSAC.agent import FlashSACAgent, FlashSACConfig  # noqa: E402
 
@@ -132,22 +136,19 @@ class Go2IsaacEnvWrapper:
 
         obs_spaces = self._isaac_env.single_observation_space
         policy_shape = obs_spaces["policy"].shape    # actor: proprio × history (e.g. 45×5=225)
-        critic_shape = obs_spaces["critic"].shape    # privileged single frame: blv + proprio + height_scan (235)
         action_shape = self._isaac_env.single_action_space.shape
-
         self._actor_obs_dim = int(policy_shape[-1])          # 225 (proprio history)
-        critic_dim = int(critic_shape[-1])                   # 235
         frames = max(1, obs_history)
-        single_frame_proprio = self._actor_obs_dim // frames  # 45
-        # Critic single frame is laid out as [base_lin_vel(3), proprio(45), height_scan(H)],
-        # so base_lin_vel = critic[:, 0:3] and height_scan starts at 3 + single_frame_proprio.
-        self._height_scan_start = single_frame_proprio + 3    # 48
-        self._height_scan_dim = critic_dim - self._height_scan_start  # 187
-        assert self._height_scan_dim >= 0, (
-            f"critic dim {critic_dim} < blv(3)+proprio({single_frame_proprio})"
-        )
-        # Full (buffer/critic) obs = [proprio_history(225), base_lin_vel(3), height_scan(187)].
-        self._full_obs_dim = self._actor_obs_dim + 3 + self._height_scan_dim
+
+        # Derive the critic slicing (base_lin_vel / height_scan located BY NAME)
+        # + per-joint action scale from the env's own metadata, asserting loudly
+        # on any mismatch — so running on Fable vs robot_lab can't silently slice
+        # the wrong critic columns or use the wrong action scale. See env_wiring.py.
+        from env_wiring import self_check
+        self._wiring = self_check(self._isaac_env, self._actor_obs_dim, frames, JOINT_ORDER)
+        self._blv_start, self._blv_dim = self._wiring["blv"]
+        self._height_scan = self._wiring["height_scan"]   # (start, dim) or None (flat)
+        self._full_obs_dim = self._wiring["full_obs_dim"]
 
         self.single_observation_space = gym.spaces.Box(
             low=0.0, high=0.0, shape=(self._full_obs_dim,), dtype=np.float32
@@ -165,14 +166,16 @@ class Go2IsaacEnvWrapper:
         self._install_pre_reset_hook()
 
     def _build_full_obs(self, obs_dict: dict[str, torch.Tensor]) -> torch.Tensor:
-        """[proprio history (225), base_lin_vel (3), height_scan (187)] → full (415).
-        The actor consumes the first 225 (proprio history); base_lin_vel + height_scan
-        are privileged-critic-only (taken from the single-frame critic group)."""
+        """[proprio history, base_lin_vel, height_scan] → full FlashSAC obs. The
+        actor consumes the proprio history; base_lin_vel + height_scan are pulled
+        from the critic group at their metadata-derived offsets (env_wiring)."""
         policy = obs_dict["policy"]
         critic = obs_dict["critic"]
-        base_lin_vel = critic[:, 0:3]
-        height_scan = critic[:, self._height_scan_start:]
-        return torch.cat([policy, base_lin_vel, height_scan], dim=-1)
+        base_lin_vel = critic[:, self._blv_start:self._blv_start + self._blv_dim]
+        if self._height_scan is not None:
+            hs, hd = self._height_scan
+            return torch.cat([policy, base_lin_vel, critic[:, hs:hs + hd]], dim=-1)
+        return torch.cat([policy, base_lin_vel], dim=-1)
 
     # ── #1 per-joint asymmetric action bounds (from soft joint limits) ──────
     def _compute_per_joint_bounds(self) -> None:
@@ -182,7 +185,7 @@ class Go2IsaacEnvWrapper:
         default = robot.data.default_joint_pos[0, order].to(self.device)          # [12]
         soft = robot.data.soft_joint_pos_limits[0, order].to(self.device)         # [12,2]
         scale = torch.tensor(
-            [0.125 if "hip" in j else 0.25 for j in JOINT_ORDER],
+            self._wiring["action_scale"],  # derived from the env action term, not hardcoded
             dtype=torch.float32, device=self.device,
         )
         a_min = (soft[:, 0] - default) / scale   # tanh=-1 → q_soft_min

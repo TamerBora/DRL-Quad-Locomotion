@@ -61,6 +61,10 @@ from isaaclab_tasks.utils.parse_cfg import parse_env_cfg  # noqa: E402
 if _LAB_MACHINE:
     import QuadLoco  # type: ignore  # noqa: F401
 import go2_sac_env_cfg  # noqa: F401, E402  (registers RobotLab-...-Go2-SAC-v0)
+try:
+    import fablequadruped.tasks  # noqa: F401, E402  (registers Fable-Go2-* for --task Fable-...)
+except Exception as _e:  # noqa: BLE001
+    print(f"[play] fablequadruped.tasks not importable ({_e}); Fable tasks unavailable.")
 
 from flash_rl.agents.flashSAC.agent import FlashSACAgent, FlashSACConfig  # noqa: E402
 
@@ -185,11 +189,13 @@ class Go2IsaacEnvWrapper:
 
         obs_spaces = self._isaac_env.single_observation_space
         self._actor_obs_dim = int(obs_spaces["policy"].shape[-1])   # proprio × history
-        critic_dim = int(obs_spaces["critic"].shape[-1])
         frames = max(1, obs_history)
-        single_frame_proprio = self._actor_obs_dim // frames
-        self._height_scan_start = single_frame_proprio + 3          # after blv + proprio
-        self._full_obs_dim = self._actor_obs_dim + 3 + (critic_dim - self._height_scan_start)
+        # Metadata-derived critic slicing + action scale (see env_wiring.py).
+        from env_wiring import self_check
+        self._wiring = self_check(self._isaac_env, self._actor_obs_dim, frames, JOINT_ORDER)
+        self._blv_start, self._blv_dim = self._wiring["blv"]
+        self._height_scan = self._wiring["height_scan"]
+        self._full_obs_dim = self._wiring["full_obs_dim"]
         action_shape = self._isaac_env.single_action_space.shape
 
         self.single_observation_space = gym.spaces.Box(
@@ -210,7 +216,7 @@ class Go2IsaacEnvWrapper:
         default = robot.data.default_joint_pos[0, order].to(self.device)
         soft = robot.data.soft_joint_pos_limits[0, order].to(self.device)
         scale = torch.tensor(
-            [0.125 if "hip" in j else 0.25 for j in JOINT_ORDER],
+            self._wiring["action_scale"],  # derived from the env action term, not hardcoded
             dtype=torch.float32, device=self.device,
         )
         a_min = (soft[:, 0] - default) / scale
@@ -221,9 +227,13 @@ class Go2IsaacEnvWrapper:
     def _build_full_obs(self, obs_dict: dict[str, torch.Tensor]) -> np.ndarray:
         policy = obs_dict["policy"]
         critic = obs_dict["critic"]
-        base_lin_vel = critic[:, 0:3]
-        height_scan = critic[:, self._height_scan_start:]
-        return torch.cat([policy, base_lin_vel, height_scan], dim=-1).cpu().numpy()
+        base_lin_vel = critic[:, self._blv_start:self._blv_start + self._blv_dim]
+        if self._height_scan is not None:
+            hs, hd = self._height_scan
+            full = torch.cat([policy, base_lin_vel, critic[:, hs:hs + hd]], dim=-1)
+        else:
+            full = torch.cat([policy, base_lin_vel], dim=-1)
+        return full.cpu().numpy()
 
     def _map_actions(self, actions: np.ndarray) -> torch.Tensor:
         a = torch.clamp(torch.as_tensor(actions, dtype=torch.float32, device=self.device), -1.0, 1.0)
