@@ -290,10 +290,12 @@
   \end{center}
   \vspace{0.1em}
   \vspace{-0.2em}
-  {\footnotesize \textbf{Frozen} $=$ only the \emph{actor's} weights change here.
-  \textbf{How many networks?} \emph{One} critic: 2 copies of the body (for pessimism) $\times$ 2
-  heads each $=$ 4 numbers --- the two student numbers give $Q_f$, the two teacher numbers $Q_g$
-  (smaller of each pair taken). Plus 2 actors. One of the five ships.}
+  {\footnotesize \textbf{Frozen} $=$ only the \emph{actor's} weights change here.\\
+  \textbf{Two critics, or one?} \emph{Two value functions, one network.} $Q_f$ and $Q_g$ are two
+  different \emph{questions} --- $\approx\!96\%$ of the critic's parameters (the body) are shared
+  and trained by both; only the small output heads are private. The labels say \emph{which head is
+  read}, not which network. Independently of that, the body is duplicated $\times 2$ for
+  pessimism, so $2$ questions $\times\ 2$ copies $=$ 4 numbers.}
 \end{frame}
 
 \begin{frame}{Why the teacher needs its own scorecard}
