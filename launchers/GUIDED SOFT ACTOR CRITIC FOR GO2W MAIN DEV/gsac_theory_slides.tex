@@ -153,38 +153,38 @@
 % =====================================================================
 \section{Architecture}
 
-\begin{frame}{Three networks}
+\begin{frame}{Three networks, and two value functions}
   \begin{center}
-  \scalebox{0.95}{%
+  \scalebox{0.88}{%
   \begin{tikzpicture}[x=1cm, y=1cm]
-    % --- actors ---
-    \node[envb,    text width=1.35cm] (o)  at (0,1.3)    {$\ot$\\ \tiny 285};
-    \node[student, text width=2.3cm]  (pf) at (2.9,1.3)  {\textbf{Control actor} $\pf$};
-    \node[envb,    text width=1.35cm] (sv) at (0,-0.5)   {$\st$\\ \tiny 532};
-    \node[guide,   text width=2.3cm]  (pg) at (2.9,-0.5) {\textbf{Guide actor} $\pg$};
-    \draw[ars] (o)  -- (pf);
-    \draw[arg] (sv) -- (pg);
-    \node[lbl, text=cStudent!60!black] at (2.9,0.55) {proprioception only};
-    \node[lbl, text=cGuide!60!black]   at (2.9,-1.25) {privileged};
+    \node[envb,    text width=1.3cm] (o)  at (0,1.25)   {$\ot$\\ \tiny 285};
+    \node[student, text width=2.2cm] (pf) at (2.8,1.25) {\textbf{Control actor} $\pf$};
+    \node[student, text width=0.8cm] (ac) at (5.2,1.25) {$a_c$};
+    \node[envb,    text width=1.3cm] (sv) at (0,-0.75)  {$\st$\\ \tiny 532};
+    \node[guide,   text width=2.2cm] (pg) at (2.8,-0.75){\textbf{Guide actor} $\pg$};
+    \node[guide,   text width=0.8cm] (ag) at (5.2,-0.75){$a_g$};
+    \draw[ars] (o) -- (pf); \draw[ars] (pf) -- (ac);
+    \draw[arg] (sv) -- (pg); \draw[arg] (pg) -- (ag);
 
-    % --- critic ---
-    \node[critic, text width=2.0cm] (in) at (6.6,0.4)  {input $(\st, a)$};
-    \node[critic, text width=2.0cm] (tr) at (9.2,0.4)  {\textbf{shared trunk}\\ \tiny $\times 2$ ensemble};
-    \node[critic, text width=1.9cm] (qf) at (12.0,1.3) {$Q_f$ head-pair\\ \tiny $\to Q^{\pf}$};
-    \node[critic, text width=1.9cm] (qg) at (12.0,-0.5){$Q_g$ head-pair\\ \tiny $\to Q^{\pg}$};
-    \draw[arc] (in) -- (tr);
-    \draw[arc] (tr) -- (qf);
-    \draw[arc] (tr) -- (qg);
-    \begin{scope}[on background layer]
-      \node[fit=(in)(tr)(qf)(qg), draw=cCritic!45, rounded corners, inner sep=7pt,
-            label={[font=\tiny, text=cCritic]below:one critic: one body, two head-pairs}] {};
-    \end{scope}
+    \node[critic, text width=2.1cm] (tr) at (9.0,0.25) {\textbf{shared trunk}\\ \tiny $\times 2$ ensemble};
+    \node[critic, text width=1.7cm] (qf) at (11.9,1.25) {$Q_f$};
+    \node[critic, text width=1.7cm] (qg) at (11.9,-0.75){$Q_g$};
+    \draw[arc] (tr) -- (qf); \draw[arc] (tr) -- (qg);
+    % one labelled input arrow, from the action side into the critic
+    \draw[arc] (6.1,0.25) -- (tr);
+    \node[lbl, align=center, text=cCritic] at (6.6,0.85) {state $\st$\\ $+$ \emph{one} action $a$};
+    \draw[cCritic!55, dashed] (ac.east) -- (6.1,0.25);
+    \draw[cCritic!55, dashed] (ag.east) -- (6.1,0.25);
   \end{tikzpicture}}
   \end{center}
-  \vspace{0.3em}
-  {\footnotesize Two actors differing only in what they \emph{see}, and one critic whose body
-  is shared but whose output heads are split. \textbf{Which} action is fed to the critic ---
-  and which head-pair answers --- depends on the update, and is the next slide.}
+  \vspace{-0.2em}
+  \begin{block}{\small What the two heads mean}
+    {\footnotesize
+    $Q_f(\st,a)$ --- how good is taking action $a$ now, \textbf{if the blind student acts from then on}\\
+    $Q_g(\st,a)$ --- how good is taking action $a$ now, \textbf{if the privileged teacher acts from then on}\\[2pt]
+    Same body, same input; only the output heads differ. \emph{Which} action is fed in ---
+    and which head answers --- depends on the update (next slide).}
+  \end{block}
 \end{frame}
 
 \begin{frame}{Which action reaches which head}
@@ -223,12 +223,14 @@
   optimizes the value of the deployed policy and never the teacher's.}
 \end{frame}
 
-\begin{frame}{Why the guide needs its own value head}
+\begin{frame}{Why two value functions, and not one}
+  \relax
+  {\footnotesize \textbf{One head-pair per actor}: $\pf$ reads $Q_f$, $\pg$ reads $Q_g$.}
   \begin{columns}[T]
     \begin{column}{0.47\textwidth}
       \begin{center}
-        {\footnotesize \textbf{One critic (naive)}}\\[4pt]
-        \scalebox{0.8}{\begin{tikzpicture}
+        {\footnotesize \textbf{One shared critic (naive)}}\\[4pt]
+        \scalebox{0.7}{\begin{tikzpicture}
           \node[critic, text width=2.7cm] (q) at (0,0)
             {$Q$ bootstrapped from $\pf$ only\\[2pt] \tiny $\Rightarrow$ it \emph{is} $Q^{\pf}$};
           \node[guide, text width=2.5cm, below=7mm of q] (g) {$\pg$ maximizes $Q^{\pf}$};
@@ -240,13 +242,13 @@
       \end{center}
       \vspace{0.2em}
       {\scriptsize The teacher's advantage is
-       \textcolor{cGuide!70!black}{\textbf{capped by construction}} --- contradicting the
-       premise that a fully-observed teacher is meaningfully better.\par}
+       \textcolor{cGuide!70!black}{\textbf{capped by construction}} --- contradicting the premise
+       that a fully-observed teacher is better.\par}
     \end{column}
     \begin{column}{0.47\textwidth}
       \begin{center}
         {\footnotesize \textbf{Two head-pairs (ours)}}\\[4pt]
-        \scalebox{0.8}{\begin{tikzpicture}
+        \scalebox{0.7}{\begin{tikzpicture}
           \node[critic, text width=2.6cm] (qf) at (0,0)
             {$Q_f$: bootstrap $a' \!\sim\! \pf$\\ \tiny $= Q^{\pf}$};
           \node[critic, text width=2.6cm, right=4mm of qf] (qg)
@@ -259,8 +261,7 @@
       \end{center}
       \vspace{0.2em}
       {\scriptsize Each actor optimizes against \emph{its own} fixed point, so the teacher can
-       run ahead. The student still optimizes $Q^{\pf}$ --- the \textbf{deployed} policy's
-       value.\par}
+       run ahead --- while the student still optimizes the \textbf{deployed} policy's value.\par}
     \end{column}
   \end{columns}
   \vspace{0.5em}
@@ -272,28 +273,37 @@
 % =====================================================================
 \section{Objectives}
 
-\begin{frame}{Critic: one template, two instantiations}
-  Both head-pairs are trained on the \textbf{same stored transition} $(\st, a_t, r, \tilde{s}_{t+n})$
-  and differ only in the policy used to bootstrap:
-  \[ y_\bullet \;=\; r^{(n)}_t \;+\; \gamma^{n}\Big(z - \alpha_\bullet \log \pi_\bullet(a'_\bullet \,|\, \cdot)\Big)(1-d) \]
+\begin{frame}{How the two value functions are trained}
+  {\footnotesize Both heads are trained on the \textbf{same recorded experience} --- a state, the
+  action really executed, the reward that followed. They differ in \emph{one} assumption: who is
+  imagined to take over afterwards.}
+
+  \vspace{0.7em}
   \begin{center}\footnotesize
-  \begin{tabular}{lllc}
+  \begin{tabular}{lll}
     \toprule
-    \textbf{head-pair} & \textbf{bootstrap action} & \textbf{temperature} & \textbf{estimates} \\
+    & \textbf{$Q_f$ (student head)} & \textbf{$Q_g$ (guide head)} \\
     \midrule
-    $Q_f$ & $a' \sim \pf(\cdot\,|\,o_{t+n})$ & $\alpha_f$ & $Q^{\pf}$ --- the deployed policy \\
-    $Q_g$ & $a'_g \sim \pg(\cdot\,|\,\tilde{s}_{t+n})$ & $\alpha_g$ & $Q^{\pg}$ --- the teacher \\
+    trained on & executed action $a_t$ & executed action $a_t$ \\
+    ``and then?'' & the student $\pf$ continues & the teacher $\pg$ continues \\
+    temperature used & $\alpha_f$ & $\alpha_g$ \\
+    so it estimates & $Q^{\pf}$ & $Q^{\pg}$ \\
     \bottomrule
   \end{tabular}
   \end{center}
-  \[ \mathcal{L}_Q \;=\; \mathrm{CE}\big(\Pi[y_f]\,\big\|\,Q_{f,i}(\st,a_t)\big)
-                       \;+\; \mathrm{CE}\big(\Pi[y_g]\,\big\|\,Q_{g,i}(\st,a_t)\big), \qquad i \in \{1,2\} \]
-  {\footnotesize The critic is distributional: $z$ are fixed bin values and $\Pi$ projects the
-  target back onto that support. $n$-step returns and the EMA target network come from the
-  backbone unchanged.}
+
+  \vspace{0.3em}
+  {\footnotesize Each head uses the ordinary SAC target --- \emph{the reward that really
+  followed, plus the discounted value of the next state} --- and only the policy used to value
+  that next state differs. Distributional critic, $n$-step returns and the EMA target network
+  are inherited unchanged.}
 \end{frame}
 
 \begin{frame}{Actors: one new term in the whole method}
+  \relax
+  {\footnotesize The guide is \textbf{plain SAC}. The student is \textbf{plain SAC plus one pull
+  toward the guide} --- that single term is the entire method.}
+
   \textbf{Guide} --- ordinary SAC on privileged input, against its own heads:
   \[ \mathcal{L}_{\pg} \;=\; \mathbb{E}\Big[\, \alpha_g \log \pg(a_g|\st) \;-\; \min_i Q_{g,i}(\st, a_g) \,\Big] \]
 
@@ -313,38 +323,33 @@
 % =====================================================================
 \section{Schedules}
 
-\begin{frame}{Guidance is scheduled, grounding is not}
+\begin{frame}{$\lambda$: how hard the student is pulled toward the teacher}
+  \relax
+  {\footnotesize $\lambda$ is the \textbf{weight on the imitation term}: $\lambda=0$ means the
+  student ignores the teacher entirely (plain SAC), larger $\lambda$ pulls it harder toward
+  copying the teacher. It is \textbf{not constant}:}
   \begin{center}
-  \begin{tikzpicture}[xscale=1.02, yscale=0.8]
-    \draw[->, thick] (0,0) -- (10.6,0) node[right, font=\tiny] {env steps};
-    \draw[->, thick] (0,0) -- (0,2.4);
-    % lambda trapezoid
-    \draw[very thick, cAccent] (0,0) -- (3,1.8) -- (8,1.8) -- (10,0);
-    \node[font=\scriptsize, text=cAccent] at (5.5,2.1) {$\lambda(t)$ --- imitation weight};
-    % p_g
-    \draw[very thick, cGuide, dashed] (0,0.55) -- (8,0.55) -- (10,0);
-    \node[font=\scriptsize, text=cGuide] at (5.2,0.85) {$p_g$ --- grounding mixture};
-    % ticks
+  \scalebox{0.8}{%
+  \begin{tikzpicture}[x=1cm, y=1cm]
+    \fill[cAccent!6]  (0,0) rectangle (3,2.0);
+    \fill[cAccent!16] (3,0) rectangle (8,2.0);
+    \fill[cAccent!6]  (8,0) rectangle (10,2.0);
+    \draw[->, thick] (0,0) -- (11.2,0) node[right, font=\tiny] {training progress};
+    \draw[->, thick] (0,0) -- (0,2.2)  node[above, font=\tiny, align=center] {weight};
+    \draw[very thick, cAccent] (0,0) -- (3,1.6) -- (8,1.6) -- (10,0);
+    \draw[very thick, cGuide, dashed] (0,0.45) -- (8,0.45) -- (10,0);
+    \node[font=\scriptsize, text=cAccent] at (5.5,1.85) {$\lambda(t)$ --- imitation weight};
+    \node[font=\scriptsize, text=cGuide]  at (5.5,0.68) {$p_g$ --- fraction of steps the teacher drives};
     \foreach \x/\l in {0/0, 3/30\%, 8/80\%, 10/100\%}
-      \draw (\x,0) -- (\x,-0.12) node[below, font=\tiny] {\l};
-    \node[font=\tiny, align=center, text=cAccent] at (1.5,-0.75) {rise from \textbf{zero}};
-    \node[font=\tiny, align=center, text=cAccent] at (9.3,-0.75) {anneal to zero};
-  \end{tikzpicture}
+      \draw (\x,0) -- (\x,-0.1) node[below, font=\tiny] {\l};
+    \node[font=\tiny, align=center] at (1.5,-1.05) {\textbf{1. warm-up}\\ teacher is still bad ---\\ do not copy it};
+    \node[font=\tiny, align=center] at (5.5,-1.05) {\textbf{2. guidance}\\ teacher is good ---\\ pull the student};
+    \node[font=\tiny, align=center] at (9.0,-1.05) {\textbf{3. release}\\ student finishes\\ on its own};
+  \end{tikzpicture}}
   \end{center}
-  \begin{columns}[T]
-    \begin{column}{0.5\textwidth}
-      {\footnotesize \textbf{$\lambda$ starts at 0} because an unconverged teacher emits
-      noise --- a constant weight injects it exactly when the student is most malleable.}
-    \end{column}
-    \begin{column}{0.5\textwidth}
-      {\footnotesize \textbf{$\lambda$ ends at 0} so the student finishes under its own
-      constraints --- the cheapest mitigation of the imitation gap.}
-    \end{column}
-  \end{columns}
-  \vspace{0.2em}
-  {\footnotesize \textbf{$p_g$ is on from step 0} --- not exploration but \emph{value grounding}:
-  without the guide ever acting, $(\st,a_g)$ never enters the buffer and $Q_g$ is queried off
-  its own training distribution.}
+  \vspace{0.1em}
+  {\footnotesize $p_g$ is a \emph{different} knob --- the small fraction of steps the teacher
+  actually drives --- so that $Q_g$ is trained on actions the teacher really took.}
 \end{frame}
 
 \begin{frame}{The imitation gap --- the method's real weakness}
@@ -371,47 +376,7 @@
 \end{frame}
 
 % =====================================================================
-\section{Data flow}
-
-\begin{frame}{Training loop}
-  \begin{center}
-  \scalebox{0.85}{%
-  \begin{tikzpicture}[node distance=4mm]
-    \node[envb, text width=1.9cm] (env) {\textbf{IsaacLab}\\ \tiny 256 parallel envs};
-    \node[student, right=8mm of env, text width=2.0cm] (roll)
-      {rollout\\ \tiny $a \sim \pf(\cdot|\ot)$};
-    \node[guide, below=6mm of roll, text width=2.2cm] (mix)
-      {\tiny mask w.p.\ $p_g$:\\ \tiny $a \sim \pg(\cdot|\st)$};
-    \node[envb, right=8mm of roll, text width=2.1cm] (buf)
-      {\textbf{Replay buffer}\\ \tiny rows: $\st,a,r^{(n)},d,\tilde{s}'$};
-    \node[critic, right=8mm of buf, text width=2.0cm] (upd)
-      {\textbf{sample batch}\\ \tiny 2048};
-
-    \node[critic, right=9mm of upd, text width=2.35cm, yshift=9mm] (uc)
-      {critic update\\ \tiny both head-pairs};
-    \node[guide, right=9mm of upd, text width=2.35cm, yshift=-2mm] (ug)
-      {guide update\\ \tiny $a_g$ recomputed};
-    \node[student, right=9mm of upd, text width=2.35cm, yshift=-13mm] (us)
-      {control update\\ \tiny SAC $+\ \lambda\,\mathrm{KL}$};
-
-    \draw[ar] (env) -- (roll);
-    \draw[arg] (mix) -- (roll);
-    \draw[ar] (roll) -- (buf);
-    \draw[ar] (buf) -- (upd);
-    \draw[arc] (upd) -- (uc);
-    \draw[arg] (upd) -- (ug);
-    \draw[ars] (upd) -- (us);
-    \draw[ar] (roll.north) to[out=120,in=60] node[lbl,above] {step} (env.north);
-  \end{tikzpicture}}
-  \end{center}
-  \vspace{0.2em}
-  \begin{itemize}\footnotesize
-    \item $a_g$ is \textbf{never stored}. It is recomputed from the sampled batch's own
-          $\st$ at update time, so teacher--state alignment is true by construction and the
-          buffer schema is unchanged --- no off-by-one is even representable.
-    \item Mixed rows are stored \textbf{unmarked}: off-policy TD does not need provenance.
-  \end{itemize}
-\end{frame}
+\section{Deployment}
 
 \begin{frame}{Deployment --- what survives}
   \begin{center}
@@ -461,32 +426,36 @@
 
   \vspace{0.6em}
   {\footnotesize The subclass overrides \texttt{sample\_actions}
-  (mixing), \texttt{update} (the three losses) and \texttt{save}/\texttt{load} (guide checkpoints); everything else is inherited.}
+  (mixing), \texttt{update} (the three losses) and \texttt{save}/\texttt{load} (guide
+  checkpoints); everything else is inherited. The teacher's action $a_g$ is never stored --- it
+  is recomputed from the sampled batch at update time, so teacher/state alignment holds by
+  construction.}
 \end{frame}
 
 \begin{frame}{One codebase, four experiments}
-  The mechanism decomposition is expressible as \emph{configuration}, which is what makes an
-  honest ablation cheap:
-
-  \vspace{0.5em}
-  \begin{center}\footnotesize
-  \begin{tabular}{llll}
+  \relax
+  {\footnotesize Each rung switches on \emph{one} mechanism, so any difference in outcome can be
+  attributed to it:}
+  \vspace{0.3em}
+  \begin{center}\scriptsize
+  \begin{tabular}{lcccll}
     \toprule
-    \textbf{Rung} & \textbf{Isolates} & \textbf{Setting} & \textbf{Cost} \\
+    & \textbf{critic sees} & \textbf{guide trained?} & \textbf{guide acts?} & \textbf{imitation} & \\
     \midrule
-    A1 & vanilla SAC & symmetric critic (override) & baseline \\
-    A2 & \textbf{M1} asymmetric critic & \texttt{-{}-no-train\_guide} & no guide built \\
-    A4 & \textbf{M2} grounding mixture & \texttt{-{}-lambda\_max 0} & guide trained, no imitation \\
-    A5 & \textbf{M3} full Guided SAC & default & everything on \\
+    A1 & $\ot$ (blind)      & no  & no        & no             & vanilla SAC \\
+    A2 & $\st$ (privileged) & no  & no        & no             & $+\,$\textbf{M1} \\
+    A4 & $\st$              & yes & $p_g > 0$ & no $(\lambda=0)$ & $+\,$\textbf{M2} \\
+    A5 & $\st$              & yes & $p_g > 0$ & yes $(\lambda>0)$ & $+\,$\textbf{M3} $=$ full Guided SAC \\
     \bottomrule
   \end{tabular}
   \end{center}
-
-  \vspace{0.7em}
-  \begin{block}{The question this design exists to answer}
-    Which of the three mechanisms actually pays --- and is the second actor worth its cost?
-    The literature has never separated them. Whatever the answer, it is informative.
-  \end{block}
+  \vspace{0.5em}
+  {\footnotesize \textbf{A1 $\to$ A2 is not ``no teacher vs teacher''} --- neither has a second
+  network. It is purely what the \emph{critic} may see: vanilla SAC trains a blind critic too,
+  while M1 hands it the height scan and leaves the actor blind. A teacher appears only at A4,
+  and only \emph{influences} the student at A5.\par\vspace{0.4em}
+  Which mechanism actually pays --- and is the second actor worth its cost? The literature has
+  never separated them.}
 \end{frame}
 
 \begin{frame}{Summary}
