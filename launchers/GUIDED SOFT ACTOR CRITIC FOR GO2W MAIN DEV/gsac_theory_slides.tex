@@ -153,6 +153,25 @@
 % =====================================================================
 \section{Architecture}
 
+\begin{frame}{Vocabulary, before the diagrams}
+  \relax
+  {\footnotesize
+  \textbf{Critic ($Q$).} A \emph{prediction}: ``if I take action $a$ in state $s$, how much total
+  reward follows?'' Learned from recorded experience --- it is not given.\\[4pt]
+  \textbf{Replay buffer, and ``stored $a_t$''.} Every step the robot takes is written down.
+  \emph{Stored} $a_t$ means \textbf{the action that was really executed} at that moment --- as
+  opposed to a hypothetical action we ask the critic about afterwards.\\[4pt]
+  \textbf{Trunk and head.} The \textbf{trunk} is the bulk of the critic network: it turns
+  $(s,a)$ into features. A \textbf{head} is a small output layer turning those features into a
+  number. Two heads on one trunk $=$ two different answers from one shared body.\\[4pt]
+  \textbf{Target network.} A slowly-updated copy of the critic, used only to build the training
+  signal --- so the critic is not chasing its own constantly-moving output.\\[4pt]
+  \textbf{Bootstrap.} The critic is trained toward \emph{reward now $+$ its own estimate of the
+  value of the next state}. That second half is the bootstrap --- and computing it forces a
+  choice: \textbf{whose policy acts next?} That single choice is what will separate $Q_f$ from
+  $Q_g$.}
+\end{frame}
+
 \begin{frame}{Three networks, and two value functions}
   \begin{center}
   \scalebox{0.88}{%
@@ -190,48 +209,63 @@
   \end{block}
 \end{frame}
 
-\begin{frame}{Which action reaches which head}
+\begin{frame}{How the critic is trained}
+  \relax
+  {\footnotesize Both head-pairs see the \textbf{same} input: the state, and the action that was
+  really executed there. So what makes them different? Only the \textbf{bootstrap} --- whose
+  policy is assumed to act next.}
+  \vspace{0.2em}
   \begin{center}
-  \scalebox{0.65}{%
+  \scalebox{0.78}{%
   \begin{tikzpicture}[x=1cm, y=1cm]
-    \foreach \y/\c in {3.0/cCritic, 1.0/cCritic, -1.0/cGuide, -3.0/cStudent}
-      \draw[\c!22, line width=15mm] (-0.5,\y) -- (13.4,\y);
-
-    % lane 1 — critic, gradient side
-    \node[envb,   text width=2.5cm] (b1) at (1.0,3.0)  {\textbf{stored} $a_t$\\ \tiny really executed};
-    \node[critic, text width=1.5cm] (t1) at (4.6,3.0)  {trunk};
-    \node[critic, text width=2.6cm] (h1) at (8.2,3.0)  {$Q_f$ \textbf{and} $Q_g$};
-    \node[critic, text width=3.0cm] (r1) at (11.9,3.0) {\textbf{critic gradients}\\ \tiny all come from here};
+    \foreach \y in {1.1,-1.1} \draw[cCritic!22, line width=16mm] (-0.5,\y) -- (13.4,\y);
+    % gradient side
+    \node[envb,   text width=2.8cm] (b1) at (1.1,1.1)  {\textbf{stored} $a_t$\\ \tiny the action really executed, read back from the buffer};
+    \node[critic, text width=1.5cm] (t1) at (4.8,1.1)  {trunk};
+    \node[critic, text width=2.6cm] (h1) at (8.3,1.1)  {$Q_f$ \textbf{and} $Q_g$\\ \tiny same input, both heads};
+    \node[critic, text width=3.0cm] (r1) at (11.9,1.1) {\textbf{all the learning}\\ \tiny gradients come only from here};
     \draw[arc] (b1)--(t1); \draw[arc] (t1)--(h1); \draw[arc] (h1)--(r1);
-
-    % lane 2 — critic, bootstrap side (what makes the two heads differ)
-    \node[envb, text width=2.5cm] (b2) at (1.0,1.0)
-      {$a' \sim \pf$ \quad $a_g' \sim \pg$\\ \tiny fresh --- \textbf{never executed}};
-    \node[critic, text width=1.5cm] (t2) at (4.6,1.0) {target\\ net};
-    \node[critic, text width=2.6cm] (h2) at (8.2,1.0) {target for $Q_f$\\ target for $Q_g$};
-    \node[critic, text width=3.0cm] (r2) at (11.9,1.0)
-      {\textbf{bootstrap}\\ \tiny the \emph{only} thing making $Q_f \neq Q_g$};
+    % bootstrap side
+    \node[envb, text width=2.8cm] (b2) at (1.1,-1.1)
+      {\textbf{who acts next?}\\ \tiny $a' \sim \pf$ \;\; or \;\; $a_g' \sim \pg$ --- \emph{imagined}, never executed};
+    \node[critic, text width=1.5cm] (t2) at (4.8,-1.1) {target\\ network};
+    \node[critic, text width=2.6cm] (h2) at (8.3,-1.1) {a target for $Q_f$\\ a target for $Q_g$};
+    \node[critic, text width=3.0cm] (r2) at (11.9,-1.1)
+      {\textbf{the bootstrap}\\ \tiny the \emph{only} thing making $Q_f \neq Q_g$};
     \draw[arc] (b2)--(t2); \draw[arc] (t2)--(h2); \draw[arc] (h2)--(r2);
-
-    % lane 3 — guide actor update
-    \node[guide,  text width=2.5cm] (b3) at (1.0,-1.0)  {$a_g \sim \pg(\cdot|\st)$\\ \tiny fresh sample};
-    \node[critic, text width=1.5cm] (t3) at (4.6,-1.0)  {trunk};
-    \node[critic, text width=2.6cm] (h3) at (8.2,-1.0)  {$Q_g$ \textbf{only}};
-    \node[guide,  text width=3.0cm] (r3) at (11.9,-1.0) {\textbf{guide update}\\ \tiny maximize; critic frozen};
-    \draw[arg] (b3)--(t3); \draw[arg] (t3)--(h3); \draw[arg] (h3)--(r3);
-
-    % lane 4 — control actor update
-    \node[student, text width=2.5cm] (b4) at (1.0,-3.0)  {$a_c \sim \pf(\cdot|\ot)$\\ \tiny fresh sample};
-    \node[critic,  text width=1.5cm] (t4) at (4.6,-3.0)  {trunk};
-    \node[critic,  text width=2.6cm] (h4) at (8.2,-3.0)  {$Q_f$ \textbf{only}};
-    \node[student, text width=3.0cm] (r4) at (11.9,-3.0) {\textbf{control update}\\ \tiny maximize $+\ \lambda\,$KL; critic frozen};
-    \draw[ars] (b4)--(t4); \draw[ars] (t4)--(h4); \draw[ars] (h4)--(r4);
   \end{tikzpicture}}
   \end{center}
   \vspace{-0.1em}
-  {\footnotesize The critic's \textbf{gradients} come only from actions really executed
-  (lane 1); the \textbf{bootstrap target} is evaluated at fresh samples that were never executed
-  (lane 2) --- exactly why the $p_g$ mixture exists.}
+  {\footnotesize The critic \textbf{learns} only from actions that really happened (top). It is
+  \textbf{asked about} imagined future actions (bottom) --- which is why the teacher must
+  occasionally drive for real, or $Q_g$ would only ever be asked about actions it has never seen.}
+\end{frame}
+
+\begin{frame}{How each actor uses the critic}
+  \relax
+  {\footnotesize Now the critic is \textbf{frozen} and simply answers questions. Each actor asks
+  \emph{its own} head-pair how good its proposed action is, and moves to make that answer larger.}
+  \vspace{0.3em}
+  \begin{center}
+  \scalebox{0.78}{%
+  \begin{tikzpicture}[x=1cm, y=1cm]
+    \draw[cGuide!22,  line width=16mm] (-0.5,1.1)  -- (13.4,1.1);
+    \draw[cStudent!22,line width=16mm] (-0.5,-1.1) -- (13.4,-1.1);
+    \node[guide,  text width=2.8cm] (b3) at (1.1,1.1)  {teacher proposes\\ $a_g \sim \pg(\cdot|\st)$};
+    \node[critic, text width=1.5cm] (t3) at (4.8,1.1)  {trunk\\ \tiny frozen};
+    \node[critic, text width=2.6cm] (h3) at (8.3,1.1)  {$Q_g$ \textbf{only}};
+    \node[guide,  text width=3.0cm] (r3) at (11.9,1.1) {\textbf{guide update}\\ \tiny make $Q_g$ larger};
+    \draw[arg] (b3)--(t3); \draw[arg] (t3)--(h3); \draw[arg] (h3)--(r3);
+    \node[student, text width=2.8cm] (b4) at (1.1,-1.1)  {student proposes\\ $a_c \sim \pf(\cdot|\ot)$};
+    \node[critic,  text width=1.5cm] (t4) at (4.8,-1.1)  {trunk\\ \tiny frozen};
+    \node[critic,  text width=2.6cm] (h4) at (8.3,-1.1)  {$Q_f$ \textbf{only}};
+    \node[student, text width=3.0cm] (r4) at (11.9,-1.1) {\textbf{control update}\\ \tiny make $Q_f$ larger, \emph{and} stay close to the teacher};
+    \draw[ars] (b4)--(t4); \draw[ars] (t4)--(h4); \draw[ars] (h4)--(r4);
+  \end{tikzpicture}}
+  \end{center}
+  \vspace{0.1em}
+  {\footnotesize Neither actor can touch the critic's weights here. The student's row carries the
+  \emph{one} extra term the whole method adds: stay close to the teacher, with weight $\lambda$.}
 \end{frame}
 
 \begin{frame}{Why two value functions, and not one}
@@ -285,10 +319,9 @@
 % =====================================================================
 \section{Objectives}
 
-\begin{frame}{How the two value functions are trained}
-  {\footnotesize Both heads are trained on the \textbf{same recorded experience} --- a state, the
-  action really executed, the reward that followed. They differ in \emph{one} assumption: who is
-  imagined to take over afterwards.}
+\begin{frame}{The two value functions, side by side}
+  {\footnotesize The same picture as before, written out: same recorded experience, one
+  differing assumption --- who is imagined to take over afterwards.}
 
   \vspace{0.7em}
   \begin{center}\footnotesize
@@ -335,33 +368,49 @@
 % =====================================================================
 \section{Schedules}
 
-\begin{frame}{$\lambda$: how hard the student is pulled toward the teacher}
+\begin{frame}{Two knobs, doing two different things}
   \relax
-  {\footnotesize $\lambda$ is the \textbf{weight on the imitation term}: $\lambda=0$ means the
-  student ignores the teacher entirely (plain SAC), larger $\lambda$ pulls it harder toward
-  copying the teacher. It is \textbf{not constant}:}
+  {\footnotesize They are \textbf{independent mechanisms}: one changes a \emph{loss}, the other
+  changes the \emph{data} that ends up in the buffer.}
+  \vspace{0.5em}
+  \begin{center}\footnotesize
+  \begin{tabular}{p{2.0cm} p{4.7cm} p{4.7cm}}
+    \toprule
+     & \textcolor{cAccent}{\textbf{$\lambda(t)$}} & \textcolor{cGuide}{\textbf{$p_g$}} \\
+    \midrule
+    changes & the \textbf{student's loss} & \textbf{what data enters the buffer} \\[3pt]
+    does & pulls the student toward copying the teacher & lets the teacher \emph{drive} a few \% of steps \\[3pt]
+    exists to & transfer the teacher's skill & make $Q_g$ answer about actions the teacher really took \\[3pt]
+    if $=0$ & student ignores the teacher (plain SAC) & teacher never acts; $Q_g$ only ever sees imagined actions \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+\end{frame}
+
+\begin{frame}{Both are scheduled, and both stop before the end}
+  \relax
   \begin{center}
   \scalebox{0.8}{%
   \begin{tikzpicture}[x=1cm, y=1cm]
-    \fill[cAccent!6]  (0,0) rectangle (3,2.0);
-    \fill[cAccent!16] (3,0) rectangle (8,2.0);
-    \fill[cAccent!6]  (8,0) rectangle (10,2.0);
-    \draw[->, thick] (0,0) -- (11.2,0) node[right, font=\tiny] {training progress};
-    \draw[->, thick] (0,0) -- (0,2.2)  node[above, font=\tiny, align=center] {weight};
-    \draw[very thick, cAccent] (0,0) -- (3,1.6) -- (8,1.6) -- (10,0);
+    \fill[cAccent!6] (0,0) rectangle (3,1.8); \fill[cAccent!16] (3,0) rectangle (8,1.8);
+    \fill[cAccent!6] (8,0) rectangle (10,1.8);
+    \draw[->, thick] (0,0) -- (11.0,0) node[right, font=\tiny] {training progress};
+    \draw[->, thick] (0,0) -- (0,2.0);
+    \draw[very thick, cAccent] (0,0) -- (3,1.5) -- (8,1.5) -- (10,0);
     \draw[very thick, cGuide, dashed] (0,0.45) -- (8,0.45) -- (10,0);
-    \node[font=\scriptsize, text=cAccent] at (5.5,1.85) {$\lambda(t)$ --- imitation weight};
-    \node[font=\scriptsize, text=cGuide]  at (5.5,0.68) {$p_g$ --- fraction of steps the teacher drives};
-    \foreach \x/\l in {0/0, 3/30\%, 8/80\%, 10/100\%}
-      \draw (\x,0) -- (\x,-0.1) node[below, font=\tiny] {\l};
-    \node[font=\tiny, align=center] at (1.5,-1.05) {\textbf{1. warm-up}\\ teacher is still bad ---\\ do not copy it};
-    \node[font=\tiny, align=center] at (5.5,-1.05) {\textbf{2. guidance}\\ teacher is good ---\\ pull the student};
-    \node[font=\tiny, align=center] at (9.0,-1.05) {\textbf{3. release}\\ student finishes\\ on its own};
+    \node[font=\scriptsize, text=cAccent] at (5.5,1.72) {$\lambda(t)$ --- how hard the student copies};
+    \node[font=\scriptsize, text=cGuide]  at (5.5,0.66) {$p_g$ --- how often the teacher drives};
+    \foreach \x/\l in {0/0, 3/30\%, 8/80\%, 10/100\%} \draw (\x,0)--(\x,-0.1) node[below,font=\tiny]{\l};
+    \node[font=\tiny, align=center] at (1.5,-0.9) {\textbf{warm-up}\\ teacher is still bad:\\ do not copy it yet};
+    \node[font=\tiny, align=center] at (5.5,-0.9) {\textbf{guidance}\\ teacher is good:\\ pull the student};
+    \node[font=\tiny, align=center] at (9.0,-0.9) {\textbf{release}\\ student finishes\\ on its own};
   \end{tikzpicture}}
   \end{center}
-  \vspace{0.1em}
-  {\footnotesize $p_g$ is a \emph{different} knob --- the small fraction of steps the teacher
-  actually drives --- so that $Q_g$ is trained on actions the teacher really took.}
+  \vspace{0.4em}
+  {\footnotesize $\lambda$ rises from \textbf{zero} because an unconverged teacher emits noise ---
+  copying it early is worse than ignoring it. Both return to zero so the student spends the last
+  stretch under its own constraints, which is the cheapest guard against inheriting behaviour a
+  blind robot cannot actually execute.}
 \end{frame}
 
 \begin{frame}{The imitation gap --- the method's real weakness}
@@ -454,20 +503,20 @@
     \toprule
     & \textbf{critic sees} & \textbf{guide trained?} & \textbf{guide acts?} & \textbf{imitation} & \\
     \midrule
-    A1 & $\ot$ (blind)      & no  & no        & no             & vanilla SAC \\
-    A2 & $\st$ (privileged) & no  & no        & no             & $+\,$\textbf{M1} \\
-    A4 & $\st$              & yes & $p_g > 0$ & no $(\lambda=0)$ & $+\,$\textbf{M2} \\
-    A5 & $\st$              & yes & $p_g > 0$ & yes $(\lambda>0)$ & $+\,$\textbf{M3} $=$ full Guided SAC \\
+    A1 & $\ot$ (blind)      & no  & no        & no             & plain SAC \\
+    A2 & $\st$ (privileged) & no  & no        & no             & privileged critic (\textbf{M1}) \\
+    A4 & $\st$              & yes & $p_g > 0$ & no $(\lambda=0)$ & \ldots\ and the teacher drives (\textbf{M2}) \\
+    A5 & $\st$              & yes & $p_g > 0$ & yes $(\lambda>0)$ & \ldots\ and it advises (\textbf{M3}) $=$ full \\
     \bottomrule
   \end{tabular}
   \end{center}
   \vspace{0.5em}
-  {\footnotesize \textbf{A1 $\to$ A2 is not ``no teacher vs teacher''} --- neither has a second
-  network. It is purely what the \emph{critic} may see: vanilla SAC trains a blind critic too,
-  while M1 hands it the height scan and leaves the actor blind. A teacher appears only at A4,
-  and only \emph{influences} the student at A5.\par\vspace{0.4em}
-  Which mechanism actually pays --- and is the second actor worth its cost? The literature has
-  never separated them.}
+  {\footnotesize \textbf{A1 $\to$ A2} is not ``no teacher vs teacher'' --- neither rung has a
+  second network. It changes only what the \emph{critic} may see.\par\vspace{0.3em}
+  \textbf{A4, ``the teacher acts but never advises''}: it drives a few \% of steps so $Q_g$ is
+  trained on real teacher actions, but $\lambda=0$ leaves the student unpulled --- separating the
+  value of the teacher's \emph{data} from that of its \emph{advice}. (A3, latent supervision, is
+  a separate future branch, not a step on this line.)}
 \end{frame}
 
 \begin{frame}{Summary}
