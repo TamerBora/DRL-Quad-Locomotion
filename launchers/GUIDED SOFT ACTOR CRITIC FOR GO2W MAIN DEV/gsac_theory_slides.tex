@@ -153,47 +153,74 @@
 % =====================================================================
 \section{Architecture}
 
-\begin{frame}{The three networks}
+\begin{frame}{Three networks}
   \begin{center}
-  \scalebox{0.9}{%
+  \scalebox{0.95}{%
   \begin{tikzpicture}[x=1cm, y=1cm]
-    % --- student row (top): the only path that ships ---
-    \node[envb,    text width=1.25cm] (obs)  at (0,1.15)   {$\ot$\\ \tiny 285};
-    \node[student, text width=2.15cm] (pif)  at (2.85,1.15) {\textbf{Control actor} $\pf$\\ \tiny tanh-Gaussian MLP};
-    \node[student, text width=0.75cm] (ac)   at (5.35,1.15) {$a_c$};
-    % --- guide row (bottom) ---
-    \node[envb,    text width=1.25cm] (priv) at (0,-1.15)   {$\st$\\ \tiny 532};
-    \node[guide,   text width=2.15cm] (pig)  at (2.85,-1.15) {\textbf{Guide actor} $\pg$\\ \tiny tanh-Gaussian MLP};
-    \node[guide,   text width=0.75cm] (ag)   at (5.35,-1.15) {$a_g$};
-    % --- critic: one body, two head-pairs ---
-    \node[critic, text width=2.0cm] (trunk) at (7.9,0)     {\textbf{Shared trunks}\\ \tiny 2 members\\ \tiny input $\st \oplus a$};
-    \node[critic, text width=1.85cm] (qf)   at (10.9,1.15)  {$Q_f$ heads\\ \tiny categorical $\to Q^{\pf}$};
-    \node[critic, text width=1.85cm] (qg)   at (10.9,-1.15) {$Q_g$ heads\\ \tiny categorical $\to Q^{\pg}$};
+    % --- actors ---
+    \node[envb,    text width=1.35cm] (o)  at (0,1.3)    {$\ot$\\ \tiny 285};
+    \node[student, text width=2.3cm]  (pf) at (2.9,1.3)  {\textbf{Control actor} $\pf$};
+    \node[envb,    text width=1.35cm] (sv) at (0,-0.5)   {$\st$\\ \tiny 532};
+    \node[guide,   text width=2.3cm]  (pg) at (2.9,-0.5) {\textbf{Guide actor} $\pg$};
+    \draw[ars] (o)  -- (pf);
+    \draw[arg] (sv) -- (pg);
+    \node[lbl, text=cStudent!60!black] at (2.9,0.55) {proprioception only};
+    \node[lbl, text=cGuide!60!black]   at (2.9,-1.25) {privileged};
 
-    \draw[ars] (obs)  -- (pif);
-    \draw[arg] (priv) -- (pig);
-    \draw[ars] (pif)  -- (ac);
-    \draw[arg] (pig)  -- (ag);
-    \draw[ar]  (ac)   -- (trunk);
-    \draw[ar]  (ag)   -- (trunk);
-    \draw[arc] (trunk) -- (qf);
-    \draw[arc] (trunk) -- (qg);
-
-    % feedback, routed clear of the boxes
-    \draw[ars, dashed] (qf.north) -- ++(0,0.62) -| (pif.north);
-    \node[lbl, text=cStudent!60!black] at (6.9,1.95) {maximize $Q_f$};
-    \draw[arg, dashed] (qg.south) -- ++(0,-0.62) -| (pig.south);
-    \node[lbl, text=cGuide!60!black]  at (6.9,-1.95) {maximize $Q_g$};
-
-    % guidance pull: teacher stop-gradded, gradient reaches the student only
-    \draw[-{Stealth[length=4pt]}, very thick, cAccent] (pig.north) -- (pif.south);
-    \node[lbl, text=cAccent, anchor=west] at (3.05,0) {$\lambda(t)\,D_{\mathrm{KL}}$};
+    % --- critic ---
+    \node[critic, text width=2.0cm] (in) at (6.6,0.4)  {input $(\st, a)$};
+    \node[critic, text width=2.0cm] (tr) at (9.2,0.4)  {\textbf{shared trunk}\\ \tiny $\times 2$ ensemble};
+    \node[critic, text width=1.9cm] (qf) at (12.0,1.3) {$Q_f$ head-pair\\ \tiny $\to Q^{\pf}$};
+    \node[critic, text width=1.9cm] (qg) at (12.0,-0.5){$Q_g$ head-pair\\ \tiny $\to Q^{\pg}$};
+    \draw[arc] (in) -- (tr);
+    \draw[arc] (tr) -- (qf);
+    \draw[arc] (tr) -- (qg);
+    \begin{scope}[on background layer]
+      \node[fit=(in)(tr)(qf)(qg), draw=cCritic!45, rounded corners, inner sep=7pt,
+            label={[font=\tiny, text=cCritic]below:one critic: one body, two head-pairs}] {};
+    \end{scope}
   \end{tikzpicture}}
   \end{center}
-  \vspace{-0.2em}
-  {\footnotesize Only the \textbf{top row} ($\ot \to \pf \to a_c$) is deployed --- the guide
-  and the whole critic exist during training only. One critic body, \textbf{two head-pairs}:
-  $Q_f$ values the deployed policy, $Q_g$ the teacher.}
+  \vspace{0.3em}
+  {\footnotesize Two actors differing only in what they \emph{see}, and one critic whose body
+  is shared but whose output heads are split. \textbf{Which} action is fed to the critic ---
+  and which head-pair answers --- depends on the update, and is the next slide.}
+\end{frame}
+
+\begin{frame}{Which action reaches which head}
+  \begin{center}
+  \scalebox{0.86}{%
+  \begin{tikzpicture}[x=1cm, y=1cm]
+    \foreach \y/\c in {2.1/cCritic, 0/cGuide, -2.1/cStudent}
+      \draw[\c!25, line width=13mm] (-0.4,\y) -- (12.6,\y);
+
+    % lane 1 — critic update
+    \node[envb,   text width=2.3cm] (b1) at (0.9,2.1)  {\textbf{stored} $a_t$\\ \tiny from the buffer};
+    \node[critic, text width=1.4cm] (t1) at (4.4,2.1)  {trunk};
+    \node[critic, text width=2.6cm] (h1) at (7.9,2.1)  {$Q_f$ \textbf{and} $Q_g$};
+    \node[critic, text width=2.4cm] (r1) at (11.3,2.1) {\textbf{critic update}\\ \tiny weights \textbf{trained}};
+    \draw[arc] (b1) -- (t1); \draw[arc] (t1) -- (h1); \draw[arc] (h1) -- (r1);
+
+    % lane 2 — guide actor update
+    \node[guide, text width=2.3cm] (b2) at (0.9,0)  {$a_g \sim \pg(\cdot|\st)$\\ \tiny fresh sample};
+    \node[critic, text width=1.4cm] (t2) at (4.4,0) {trunk};
+    \node[critic, text width=2.6cm] (h2) at (7.9,0) {$Q_g$ \textbf{only}};
+    \node[guide, text width=2.4cm] (r2) at (11.3,0) {\textbf{guide update}\\ \tiny maximize; critic frozen};
+    \draw[arg] (b2) -- (t2); \draw[arg] (t2) -- (h2); \draw[arg] (h2) -- (r2);
+
+    % lane 3 — control actor update
+    \node[student, text width=2.3cm] (b3) at (0.9,-2.1)  {$a_c \sim \pf(\cdot|\ot)$\\ \tiny fresh sample};
+    \node[critic,  text width=1.4cm] (t3) at (4.4,-2.1)  {trunk};
+    \node[critic,  text width=2.6cm] (h3) at (7.9,-2.1)  {$Q_f$ \textbf{only}};
+    \node[student, text width=2.4cm] (r3) at (11.3,-2.1) {\textbf{control update}\\ \tiny maximize $+\ \lambda\,$KL; critic frozen};
+    \draw[ars] (b3) -- (t3); \draw[ars] (t3) -- (h3); \draw[ars] (h3) -- (r3);
+  \end{tikzpicture}}
+  \end{center}
+  \vspace{0.2em}
+  {\footnotesize The trunk is the \emph{same} network in all three lanes. Two rules make the
+  whole design readable: the critic is \textbf{only ever trained on actions that were actually
+  executed}, and each actor \textbf{only ever reads its own head-pair} --- so the student
+  optimizes the value of the deployed policy and never the teacher's.}
 \end{frame}
 
 \begin{frame}{Why the guide needs its own value head}
@@ -245,46 +272,41 @@
 % =====================================================================
 \section{Objectives}
 
-\begin{frame}{Critic: two heads, one body}
-  Both head-pairs predict from the \textbf{stored} action $a_t$; they differ only in the
-  policy used to bootstrap the target.
-
-  \vspace{0.3em}
-  {\small
-  \begin{align*}
-    \textbf{student:}\quad & y_f = r^{(n)}_t + \gamma^n\!\left(z - \alpha_f \log \pf(a'|o_{t+n})\right)(1-d), \quad a' \sim \pf(\cdot|o_{t+n})\\[2pt]
-    \textbf{guide:}\quad & y_g = r^{(n)}_t + \gamma^n\!\left(z - \alpha_g \log \pg(a_g'|\tilde{s}_{t+n})\right)(1-d), \quad a_g' \sim \pg(\cdot|\tilde{s}_{t+n})\\[4pt]
-    \mathcal{L}_Q &= \underbrace{\mathrm{CE}\big(\Pi[y_f]\,\|\,Q_{f,i}(\st,a_t)\big)}_{\text{student heads}}
-                   + \underbrace{\mathrm{CE}\big(\Pi[y_g]\,\|\,Q_{g,i}(\st,a_t)\big)}_{\text{guide heads}}, \qquad i \in \{1,2\}
-  \end{align*}}
-
-  \vspace{0.2em}
-  \begin{itemize}\footnotesize
-    \item Distributional (categorical) critic with projection $\Pi$ onto a fixed bin support,
-          $n$-step returns, EMA target network --- all inherited from the FlashSAC backbone.
-    \item The guide's actions appear \textbf{nowhere} in the student's target: $Q_f$ must
-          evaluate the policy that is actually deployed.
-  \end{itemize}
+\begin{frame}{Critic: one template, two instantiations}
+  Both head-pairs are trained on the \textbf{same stored transition} $(\st, a_t, r, \tilde{s}_{t+n})$
+  and differ only in the policy used to bootstrap:
+  \[ y_\bullet \;=\; r^{(n)}_t \;+\; \gamma^{n}\Big(z - \alpha_\bullet \log \pi_\bullet(a'_\bullet \,|\, \cdot)\Big)(1-d) \]
+  \begin{center}\footnotesize
+  \begin{tabular}{lllc}
+    \toprule
+    \textbf{head-pair} & \textbf{bootstrap action} & \textbf{temperature} & \textbf{estimates} \\
+    \midrule
+    $Q_f$ & $a' \sim \pf(\cdot\,|\,o_{t+n})$ & $\alpha_f$ & $Q^{\pf}$ --- the deployed policy \\
+    $Q_g$ & $a'_g \sim \pg(\cdot\,|\,\tilde{s}_{t+n})$ & $\alpha_g$ & $Q^{\pg}$ --- the teacher \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+  \[ \mathcal{L}_Q \;=\; \mathrm{CE}\big(\Pi[y_f]\,\big\|\,Q_{f,i}(\st,a_t)\big)
+                       \;+\; \mathrm{CE}\big(\Pi[y_g]\,\big\|\,Q_{g,i}(\st,a_t)\big), \qquad i \in \{1,2\} \]
+  {\footnotesize The critic is distributional: $z$ are fixed bin values and $\Pi$ projects the
+  target back onto that support. $n$-step returns and the EMA target network come from the
+  backbone unchanged.}
 \end{frame}
 
-\begin{frame}{Actors}
-  \textbf{Guide actor} --- ordinary SAC on the privileged observation, against its own heads:
-  {\small
-  \[ \mathcal{L}_{\pg} = \mathbb{E}\Big[\, \alpha_g \log \pg(a_g|\st) \;-\; \min_i Q_{g,i}(\st, a_g) \,\Big], \qquad a_g \sim \pg(\cdot|\st) \]}
+\begin{frame}{Actors: one new term in the whole method}
+  \textbf{Guide} --- ordinary SAC on privileged input, against its own heads:
+  \[ \mathcal{L}_{\pg} \;=\; \mathbb{E}\Big[\, \alpha_g \log \pg(a_g|\st) \;-\; \min_i Q_{g,i}(\st, a_g) \,\Big] \]
 
-  \textbf{Control actor} --- SAC on proprioception, plus the imitation term:
-  {\small
-  \[ \mathcal{L}_{\pf} = \mathbb{E}\Big[\, \underbrace{\alpha_f \log \pf(a_c|\ot) - \min_i Q_{f,i}(\st, a_c)}_{\text{standard SAC, asymmetric critic}}
-     \;+\; \underbrace{\lambda(t)\,\bar{q}\; D_{\mathrm{KL}}\!\big(\pf(\cdot|\ot)\,\big\|\,\mathrm{sg}[\pg(\cdot|\st)]\big)}_{\text{guidance}} \Big] \]}
+  \textbf{Control} --- the same objective on proprioception, plus guidance:
+  \[ \mathcal{L}_{\pf} \;=\; \mathbb{E}\Big[\, \alpha_f \log \pf(a_c|\ot) \;-\; \min_i Q_{f,i}(\st, a_c)
+     \;+\; \underbrace{\lambda(t)\,\bar{q}\; D_{\mathrm{KL}}\big(\pf(\cdot|\ot)\,\big\|\,\mathrm{sg}[\pg(\cdot|\st)]\big)}_{\text{the only term Guided SAC adds}} \Big] \]
 
-  \vspace{0.2em}
   \begin{itemize}\footnotesize
-    \item \textbf{KL, not $L_2$.} Both policies are $\tanh$-Gaussian and $\tanh$ is a shared
-          diffeomorphism, so this \emph{equals} the closed-form Gaussian KL --- exact, and it
-          matches the teacher's \emph{variance}, not just its mean. $L_2$ forces false confidence
-          where the teacher is unsure. Teacher is stop-gradded.
+    \item \textbf{KL, not $L_2$.} Both policies are $\tanh$-Gaussian, so the KL is closed-form
+          and matches the teacher's \emph{variance}, not just its mean --- the student may stay
+          uncertain where the teacher is. The teacher is stop-gradded.
     \item $\bar{q} = \mathbb{E}|\min_i Q_{f,i}|$ keeps $\lambda$ dimensionless as values grow;
-          $\alpha_f,\alpha_g$ are \textbf{separate} --- the teacher deserves its own exploration level.
+          $\alpha_f, \alpha_g$ are learned \textbf{separately}.
   \end{itemize}
 \end{frame}
 
@@ -395,7 +417,7 @@
   \begin{center}
   \begin{tikzpicture}[node distance=6mm]
     \node[envb, text width=2.0cm] (s) {proprioception\\ \tiny $\ot$, 285};
-    \node[student, right=9mm of s, text width=2.4cm] (a) {$\pf$\\ \tiny plain MLP, TorchScript};
+    \node[student, right=9mm of s, text width=2.4cm] (a) {$\pf$\\ \tiny feed-forward, TorchScript};
     \node[student, right=9mm of a, text width=2.0cm] (t) {$\tanh(\mu)$\\ \tiny deterministic};
     \node[envb, right=9mm of t, text width=2.0cm] (o) {16 actions\\ \tiny $\times$ bounds};
     \draw[ars] (s) -- (a); \draw[ars] (a) -- (t); \draw[ars] (t) -- (o);
@@ -438,8 +460,8 @@
   \end{center}
 
   \vspace{0.6em}
-  {\footnotesize The subclass overrides exactly three hooks: \texttt{sample\_actions}
-  (mixing), \texttt{update} (three losses), \texttt{save/load} (guide checkpoints).}
+  {\footnotesize The subclass overrides \texttt{sample\_actions}
+  (mixing), \texttt{update} (the three losses) and \texttt{save}/\texttt{load} (guide checkpoints); everything else is inherited.}
 \end{frame}
 
 \begin{frame}{One codebase, four experiments}
@@ -452,7 +474,7 @@
     \toprule
     \textbf{Rung} & \textbf{Isolates} & \textbf{Setting} & \textbf{Cost} \\
     \midrule
-    A1 & vanilla SAC & symmetric critic & baseline \\
+    A1 & vanilla SAC & symmetric critic (override) & baseline \\
     A2 & \textbf{M1} asymmetric critic & \texttt{-{}-no-train\_guide} & no guide built \\
     A4 & \textbf{M2} grounding mixture & \texttt{-{}-lambda\_max 0} & guide trained, no imitation \\
     A5 & \textbf{M3} full Guided SAC & default & everything on \\
