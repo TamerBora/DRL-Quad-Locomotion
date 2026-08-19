@@ -1,0 +1,486 @@
+% Guided Soft Actor-Critic for Go2-W — theory & implementation slides.
+% Mirrors flashsac_go2w_fable/gsac/ (config.py, network.py, update.py, agent.py)
+% and docs/guided_sac_design.md (rev. 3). No experimental results by design.
+\documentclass[aspectratio=169]{beamer}
+\usetheme{metropolis}
+
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,fit,backgrounds,calc,shapes.geometric,decorations.pathreplacing}
+
+\definecolor{cStudent}{HTML}{1B7F79}
+\definecolor{cGuide}{HTML}{B8552B}
+\definecolor{cCritic}{HTML}{3B5B92}
+\definecolor{cEnv}{HTML}{4A4A4A}
+\definecolor{cDrop}{HTML}{9B9B9B}
+\definecolor{cAccent}{HTML}{8E44AD}
+
+\tikzset{
+  blk/.style={rounded corners=2pt, draw, thick, align=center,
+              inner sep=4pt, font=\scriptsize},
+  student/.style={blk, draw=cStudent, fill=cStudent!8, text=cStudent!60!black},
+  guide/.style={blk, draw=cGuide, fill=cGuide!8, text=cGuide!60!black},
+  critic/.style={blk, draw=cCritic, fill=cCritic!8, text=cCritic!60!black},
+  envb/.style={blk, draw=cEnv, fill=cEnv!6, text=cEnv},
+  dropb/.style={blk, draw=cDrop, fill=cDrop!8, text=cDrop!70!black, dashed},
+  ar/.style={-{Stealth[length=4pt]}, thick},
+  arg/.style={-{Stealth[length=4pt]}, thick, cGuide},
+  ars/.style={-{Stealth[length=4pt]}, thick, cStudent},
+  arc/.style={-{Stealth[length=4pt]}, thick, cCritic},
+  lbl/.style={font=\tiny, inner sep=1.5pt},
+}
+
+\newcommand{\ot}{o_t}
+\newcommand{\st}{\tilde{s}_t}
+\newcommand{\pf}{\pi_f}
+\newcommand{\pg}{\pi_g}
+
+\title{Guided Soft Actor--Critic}
+\subtitle{Blind Go2-W Locomotion --- Theory and Implementation}
+\author{Tamer Bora İkizoğlu}
+\institute{Istanbul Technical University}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\begin{frame}{Outline}
+  \tableofcontents
+\end{frame}
+
+% =====================================================================
+\section{The problem}
+
+\begin{frame}{Blind locomotion is a POMDP}
+  \textbf{In simulation} we can read anything: body linear velocity, a height scan of
+  the terrain, contact forces, friction, every randomized dynamics parameter.
+
+  \textbf{On the real robot} almost none of that exists. The deployed policy sees only
+  proprioception: joint encoders, IMU, its own previous action.
+
+  \vspace{0.6em}
+  \begin{alertblock}{The asymmetry}
+    Training-time information $\gg$ deployment-time information. A policy trained on
+    what it \emph{cannot} have at deployment is useless; a policy that ignores what the
+    simulator knows is wasteful.
+  \end{alertblock}
+
+  \vspace{0.4em}
+  Guided SAC is one answer: let a \emph{privileged} network help train a \emph{blind}
+  network that is the only thing shipped.
+\end{frame}
+
+\begin{frame}{Two observation channels}
+  \begin{center}
+  \begin{tikzpicture}[scale=1]
+    \draw[fill=cStudent!12, draw=cStudent, thick] (0,0) rectangle (5.6,0.9);
+    \node[font=\small, text=cStudent!60!black] at (2.8,0.45) {$\ot$ \;\; 285};
+    \draw[fill=cCritic!12, draw=cCritic, thick] (5.6,0) rectangle (10.4,0.9);
+    \node[font=\small, text=cCritic!60!black] at (8.0,0.45) {$s_t$ \;\; 247};
+    \draw[decorate, decoration={brace, amplitude=5pt, mirror}, thick]
+      (0,-0.15) -- (10.4,-0.15) node[midway, below=6pt, font=\small] {$\st = [\ot \,\|\, s_t]$ \;\; 532 \; (one replay-buffer row)};
+
+    \node[lbl, align=left, anchor=north west, text=cStudent!60!black] at (0,-1.5)
+      {\textbf{Proprioceptive, noisy, 5-frame history}\\
+       $5\times 57$: base ang.\ vel.\ (3), projected gravity (3),\\
+       velocity command (3), joint pos (16), joint vel (16),\\
+       previous action (16)};
+    \node[lbl, align=left, anchor=north west, text=cCritic!60!black] at (5.9,-1.5)
+      {\textbf{Privileged, clean, single frame}\\
+       $57 + 3 + 187$: same frame without noise,\\
+       base \emph{linear} velocity (3),\\
+       height scan (187)};
+  \end{tikzpicture}
+  \end{center}
+  \vspace{0.2em}
+  {\footnotesize Action space: $16$ dims $=$ 12 leg position targets $+$ 4 wheel velocity
+  targets, $\tanh$-squashed and scaled by per-dimension bounds (legs $5.0$, wheels $10.0$).}
+\end{frame}
+
+% =====================================================================
+\section{Guided SAC: the idea}
+
+\begin{frame}{Origin, and what we changed}
+  Haklıdır \& Temeltaş (2021) and Çerçi \& Temeltaş (2024) train \textbf{two actors}:
+  a \emph{guiding actor} that sees clean state, and a \emph{control actor} that sees
+  degraded state and is pulled toward the guide's actions.
+
+  \vspace{0.5em}
+  \begin{center}
+  \scriptsize
+  \begin{tabular}{lll}
+    \toprule
+     & \textbf{Çerçi (2024)} & \textbf{This project} \\
+    \midrule
+    Why the control actor is handicapped & adversarial perturbation & \emph{genuine} partial observability \\
+    Guiding actor sees & clean state $s_t$ & privileged $\st$ (height scan, lin.\ vel.) \\
+    Control actor sees & perturbed $s^p_t$ & proprioception $\ot$ + history \\
+    Shapes & identical & \textbf{different} (285 vs 532) \\
+    Agents & $k = 3,5,7$ & $k = 1$ (single agent) \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+
+  \vspace{0.4em}
+  {\footnotesize Two consequences: the paper's $s^p_t \!\to\! \ot$ mapping is \emph{not}
+  cosmetic (different dimensionality), and every multi-agent construction collapses at
+  $k=1$ --- it must be re-derived, not copied.}
+\end{frame}
+
+\begin{frame}{Guided SAC is three mechanisms, not one}
+  \begin{center}
+  \begin{tikzpicture}[node distance=3mm]
+    \node[critic, text width=3.1cm] (m1)
+      {\textbf{M1 — Asymmetric critic}\\[2pt] $Q(\st,a)$ sees everything,\\ $\pf(a|\ot)$ does not};
+    \node[guide, text width=3.1cm, right=8mm of m1] (m2)
+      {\textbf{M2 — Guide as behavior policy}\\[2pt] the teacher also \emph{acts}\\ in the environment};
+    \node[student, text width=3.1cm, right=8mm of m2] (m3)
+      {\textbf{M3 — Action-space imitation}\\[2pt] pull $\pf$ toward $\pg$\\ with weight $\lambda$};
+    \node[lbl, below=3mm of m1, text width=3.1cm, align=center] {cost: \emph{zero} extra networks\\ fixes credit assignment};
+    \node[lbl, below=3mm of m2, text width=3.1cm, align=center] {cost: one extra actor\\ widens state visitation};
+    \node[lbl, below=3mm of m3, text width=3.1cm, align=center] {cost: one norm term\\ dense low-variance target};
+  \end{tikzpicture}
+  \end{center}
+  \vspace{0.8em}
+  The literature ships these \textbf{bundled}. Separating them matters: M1 is free and not
+  specific to Guided SAC, while M2 is the expensive one. Our design keeps M1, keeps M3 in
+  softened form, and uses only a \emph{small} amount of M2 --- for a different reason than
+  the original (next slides).
+\end{frame}
+
+% =====================================================================
+\section{Architecture}
+
+\begin{frame}{The three networks}
+  \begin{center}
+  \scalebox{0.9}{%
+  \begin{tikzpicture}[x=1cm, y=1cm]
+    % --- student row (top): the only path that ships ---
+    \node[envb,    text width=1.25cm] (obs)  at (0,1.15)   {$\ot$\\ \tiny 285};
+    \node[student, text width=2.15cm] (pif)  at (2.85,1.15) {\textbf{Control actor} $\pf$\\ \tiny tanh-Gaussian MLP};
+    \node[student, text width=0.75cm] (ac)   at (5.35,1.15) {$a_c$};
+    % --- guide row (bottom) ---
+    \node[envb,    text width=1.25cm] (priv) at (0,-1.15)   {$\st$\\ \tiny 532};
+    \node[guide,   text width=2.15cm] (pig)  at (2.85,-1.15) {\textbf{Guide actor} $\pg$\\ \tiny tanh-Gaussian MLP};
+    \node[guide,   text width=0.75cm] (ag)   at (5.35,-1.15) {$a_g$};
+    % --- critic: one body, two head-pairs ---
+    \node[critic, text width=2.0cm] (trunk) at (7.9,0)     {\textbf{Shared trunks}\\ \tiny 2 members\\ \tiny input $\st \oplus a$};
+    \node[critic, text width=1.85cm] (qf)   at (10.9,1.15)  {$Q_f$ heads\\ \tiny categorical $\to Q^{\pf}$};
+    \node[critic, text width=1.85cm] (qg)   at (10.9,-1.15) {$Q_g$ heads\\ \tiny categorical $\to Q^{\pg}$};
+
+    \draw[ars] (obs)  -- (pif);
+    \draw[arg] (priv) -- (pig);
+    \draw[ars] (pif)  -- (ac);
+    \draw[arg] (pig)  -- (ag);
+    \draw[ar]  (ac)   -- (trunk);
+    \draw[ar]  (ag)   -- (trunk);
+    \draw[arc] (trunk) -- (qf);
+    \draw[arc] (trunk) -- (qg);
+
+    % feedback, routed clear of the boxes
+    \draw[ars, dashed] (qf.north) -- ++(0,0.62) -| (pif.north);
+    \node[lbl, text=cStudent!60!black] at (6.9,1.95) {maximize $Q_f$};
+    \draw[arg, dashed] (qg.south) -- ++(0,-0.62) -| (pig.south);
+    \node[lbl, text=cGuide!60!black]  at (6.9,-1.95) {maximize $Q_g$};
+
+    % guidance pull: teacher stop-gradded, gradient reaches the student only
+    \draw[-{Stealth[length=4pt]}, very thick, cAccent] (pig.north) -- (pif.south);
+    \node[lbl, text=cAccent, anchor=west] at (3.05,0) {$\lambda(t)\,D_{\mathrm{KL}}$};
+  \end{tikzpicture}}
+  \end{center}
+  \vspace{-0.2em}
+  {\footnotesize Only the \textbf{top row} ($\ot \to \pf \to a_c$) is deployed --- the guide
+  and the whole critic exist during training only. One critic body, \textbf{two head-pairs}:
+  $Q_f$ values the deployed policy, $Q_g$ the teacher.}
+\end{frame}
+
+\begin{frame}{Why the guide needs its own value head}
+  \begin{columns}[T]
+    \begin{column}{0.47\textwidth}
+      \begin{center}
+        {\footnotesize \textbf{One critic (naive)}}\\[4pt]
+        \scalebox{0.8}{\begin{tikzpicture}
+          \node[critic, text width=2.7cm] (q) at (0,0)
+            {$Q$ bootstrapped from $\pf$ only\\[2pt] \tiny $\Rightarrow$ it \emph{is} $Q^{\pf}$};
+          \node[guide, text width=2.5cm, below=7mm of q] (g) {$\pg$ maximizes $Q^{\pf}$};
+          \draw[arg] (q) -- (g);
+          \node[lbl, below=5mm of g, text width=3.9cm, align=center, text=cGuide!70!black]
+            {one greedy improvement step \emph{over the student};\\ improvements never re-enter
+             the bootstrap $\Rightarrow$ they never compound};
+        \end{tikzpicture}}
+      \end{center}
+      \vspace{0.2em}
+      {\scriptsize The teacher's advantage is
+       \textcolor{cGuide!70!black}{\textbf{capped by construction}} --- contradicting the
+       premise that a fully-observed teacher is meaningfully better.\par}
+    \end{column}
+    \begin{column}{0.47\textwidth}
+      \begin{center}
+        {\footnotesize \textbf{Two head-pairs (ours)}}\\[4pt]
+        \scalebox{0.8}{\begin{tikzpicture}
+          \node[critic, text width=2.6cm] (qf) at (0,0)
+            {$Q_f$: bootstrap $a' \!\sim\! \pf$\\ \tiny $= Q^{\pf}$};
+          \node[critic, text width=2.6cm, right=4mm of qf] (qg)
+            {$Q_g$: bootstrap $a_g' \!\sim\! \pg$\\ \tiny $= Q^{\pg}$};
+          \node[student, text width=2.1cm, below=9mm of qf] (sf) {$\pf$ reads $Q_f$};
+          \node[guide,   text width=2.1cm, below=9mm of qg] (sg) {$\pg$ reads $Q_g$};
+          \draw[ars] (qf) -- (sf);
+          \draw[arg] (qg) -- (sg);
+        \end{tikzpicture}}
+      \end{center}
+      \vspace{0.2em}
+      {\scriptsize Each actor optimizes against \emph{its own} fixed point, so the teacher can
+       run ahead. The student still optimizes $Q^{\pf}$ --- the \textbf{deployed} policy's
+       value.\par}
+    \end{column}
+  \end{columns}
+  \vspace{0.5em}
+  \begin{center}
+    {\scriptsize This recovers, in twin-$Q$ form, the role of Çerçi's separate $V$ network.}
+  \end{center}
+\end{frame}
+
+% =====================================================================
+\section{Objectives}
+
+\begin{frame}{Critic: two heads, one body}
+  Both head-pairs predict from the \textbf{stored} action $a_t$; they differ only in the
+  policy used to bootstrap the target.
+
+  \vspace{0.3em}
+  {\small
+  \begin{align*}
+    \textbf{student:}\quad & y_f = r^{(n)}_t + \gamma^n\!\left(z - \alpha_f \log \pf(a'|o_{t+n})\right)(1-d), \quad a' \sim \pf(\cdot|o_{t+n})\\[2pt]
+    \textbf{guide:}\quad & y_g = r^{(n)}_t + \gamma^n\!\left(z - \alpha_g \log \pg(a_g'|\tilde{s}_{t+n})\right)(1-d), \quad a_g' \sim \pg(\cdot|\tilde{s}_{t+n})\\[4pt]
+    \mathcal{L}_Q &= \underbrace{\mathrm{CE}\big(\Pi[y_f]\,\|\,Q_{f,i}(\st,a_t)\big)}_{\text{student heads}}
+                   + \underbrace{\mathrm{CE}\big(\Pi[y_g]\,\|\,Q_{g,i}(\st,a_t)\big)}_{\text{guide heads}}, \qquad i \in \{1,2\}
+  \end{align*}}
+
+  \vspace{0.2em}
+  \begin{itemize}\footnotesize
+    \item Distributional (categorical) critic with projection $\Pi$ onto a fixed bin support,
+          $n$-step returns, EMA target network --- all inherited from the FlashSAC backbone.
+    \item The guide's actions appear \textbf{nowhere} in the student's target: $Q_f$ must
+          evaluate the policy that is actually deployed.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Actors}
+  \textbf{Guide actor} --- ordinary SAC on the privileged observation, against its own heads:
+  {\small
+  \[ \mathcal{L}_{\pg} = \mathbb{E}\Big[\, \alpha_g \log \pg(a_g|\st) \;-\; \min_i Q_{g,i}(\st, a_g) \,\Big], \qquad a_g \sim \pg(\cdot|\st) \]}
+
+  \textbf{Control actor} --- SAC on proprioception, plus the imitation term:
+  {\small
+  \[ \mathcal{L}_{\pf} = \mathbb{E}\Big[\, \underbrace{\alpha_f \log \pf(a_c|\ot) - \min_i Q_{f,i}(\st, a_c)}_{\text{standard SAC, asymmetric critic}}
+     \;+\; \underbrace{\lambda(t)\,\bar{q}\; D_{\mathrm{KL}}\!\big(\pf(\cdot|\ot)\,\big\|\,\mathrm{sg}[\pg(\cdot|\st)]\big)}_{\text{guidance}} \Big] \]}
+
+  \vspace{0.2em}
+  \begin{itemize}\footnotesize
+    \item \textbf{KL, not $L_2$.} Both policies are $\tanh$-Gaussian and $\tanh$ is a shared
+          diffeomorphism, so this \emph{equals} the closed-form Gaussian KL --- exact, and it
+          matches the teacher's \emph{variance}, not just its mean. $L_2$ forces false confidence
+          where the teacher is unsure. Teacher is stop-gradded.
+    \item $\bar{q} = \mathbb{E}|\min_i Q_{f,i}|$ keeps $\lambda$ dimensionless as values grow;
+          $\alpha_f,\alpha_g$ are \textbf{separate} --- the teacher deserves its own exploration level.
+  \end{itemize}
+\end{frame}
+
+% =====================================================================
+\section{Schedules}
+
+\begin{frame}{Guidance is scheduled, grounding is not}
+  \begin{center}
+  \begin{tikzpicture}[xscale=1.02, yscale=0.8]
+    \draw[->, thick] (0,0) -- (10.6,0) node[right, font=\tiny] {env steps};
+    \draw[->, thick] (0,0) -- (0,2.4);
+    % lambda trapezoid
+    \draw[very thick, cAccent] (0,0) -- (3,1.8) -- (8,1.8) -- (10,0);
+    \node[font=\scriptsize, text=cAccent] at (5.5,2.1) {$\lambda(t)$ --- imitation weight};
+    % p_g
+    \draw[very thick, cGuide, dashed] (0,0.55) -- (8,0.55) -- (10,0);
+    \node[font=\scriptsize, text=cGuide] at (5.2,0.85) {$p_g$ --- grounding mixture};
+    % ticks
+    \foreach \x/\l in {0/0, 3/30\%, 8/80\%, 10/100\%}
+      \draw (\x,0) -- (\x,-0.12) node[below, font=\tiny] {\l};
+    \node[font=\tiny, align=center, text=cAccent] at (1.5,-0.75) {rise from \textbf{zero}};
+    \node[font=\tiny, align=center, text=cAccent] at (9.3,-0.75) {anneal to zero};
+  \end{tikzpicture}
+  \end{center}
+  \begin{columns}[T]
+    \begin{column}{0.5\textwidth}
+      {\footnotesize \textbf{$\lambda$ starts at 0} because an unconverged teacher emits
+      noise --- a constant weight injects it exactly when the student is most malleable.}
+    \end{column}
+    \begin{column}{0.5\textwidth}
+      {\footnotesize \textbf{$\lambda$ ends at 0} so the student finishes under its own
+      constraints --- the cheapest mitigation of the imitation gap.}
+    \end{column}
+  \end{columns}
+  \vspace{0.2em}
+  {\footnotesize \textbf{$p_g$ is on from step 0} --- not exploration but \emph{value grounding}:
+  without the guide ever acting, $(\st,a_g)$ never enters the buffer and $Q_g$ is queried off
+  its own training distribution.}
+\end{frame}
+
+\begin{frame}{The imitation gap --- the method's real weakness}
+  $\pg$ solves the \emph{fully observed} MDP. $\pf$ must solve the \emph{POMDP}. These are
+  different problems, and projecting one onto the other is not optimal in general.
+
+  \vspace{0.5em}
+  \begin{alertblock}{Concretely, for blind locomotion}
+    A teacher that sees the height scan never learns to probe the ground with a foot, never
+    steps cautiously into the unknown, never moves to enrich its own IMU signal --- it has no
+    need to. Imitating it can therefore \emph{suppress exactly the behaviours that keep a
+    blind robot alive}.
+  \end{alertblock}
+
+  \vspace{0.2em}
+  {\footnotesize Mitigations built in, weakest to strongest:}
+  \begin{enumerate}\footnotesize
+    \item \textbf{KL rather than $L_2$} --- the student may stay uncertain where the teacher is.
+    \item \textbf{$\lambda \to 0$} --- guidance is removed before training ends.
+    \item \textbf{Latent supervision} (planned): supervise a learned \emph{representation}
+          $\hat{z} = E(\ot)$ against privileged $z$ and let the policy decide how to use it ---
+          closes the gap by construction.
+  \end{enumerate}
+\end{frame}
+
+% =====================================================================
+\section{Data flow}
+
+\begin{frame}{Training loop}
+  \begin{center}
+  \scalebox{0.85}{%
+  \begin{tikzpicture}[node distance=4mm]
+    \node[envb, text width=1.9cm] (env) {\textbf{IsaacLab}\\ \tiny 256 parallel envs};
+    \node[student, right=8mm of env, text width=2.0cm] (roll)
+      {rollout\\ \tiny $a \sim \pf(\cdot|\ot)$};
+    \node[guide, below=6mm of roll, text width=2.2cm] (mix)
+      {\tiny mask w.p.\ $p_g$:\\ \tiny $a \sim \pg(\cdot|\st)$};
+    \node[envb, right=8mm of roll, text width=2.1cm] (buf)
+      {\textbf{Replay buffer}\\ \tiny rows: $\st,a,r^{(n)},d,\tilde{s}'$};
+    \node[critic, right=8mm of buf, text width=2.0cm] (upd)
+      {\textbf{sample batch}\\ \tiny 2048};
+
+    \node[critic, right=9mm of upd, text width=2.35cm, yshift=9mm] (uc)
+      {critic update\\ \tiny both head-pairs};
+    \node[guide, right=9mm of upd, text width=2.35cm, yshift=-2mm] (ug)
+      {guide update\\ \tiny $a_g$ recomputed};
+    \node[student, right=9mm of upd, text width=2.35cm, yshift=-13mm] (us)
+      {control update\\ \tiny SAC $+\ \lambda\,\mathrm{KL}$};
+
+    \draw[ar] (env) -- (roll);
+    \draw[arg] (mix) -- (roll);
+    \draw[ar] (roll) -- (buf);
+    \draw[ar] (buf) -- (upd);
+    \draw[arc] (upd) -- (uc);
+    \draw[arg] (upd) -- (ug);
+    \draw[ars] (upd) -- (us);
+    \draw[ar] (roll.north) to[out=120,in=60] node[lbl,above] {step} (env.north);
+  \end{tikzpicture}}
+  \end{center}
+  \vspace{0.2em}
+  \begin{itemize}\footnotesize
+    \item $a_g$ is \textbf{never stored}. It is recomputed from the sampled batch's own
+          $\st$ at update time, so teacher--state alignment is true by construction and the
+          buffer schema is unchanged --- no off-by-one is even representable.
+    \item Mixed rows are stored \textbf{unmarked}: off-policy TD does not need provenance.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Deployment --- what survives}
+  \begin{center}
+  \begin{tikzpicture}[node distance=6mm]
+    \node[envb, text width=2.0cm] (s) {proprioception\\ \tiny $\ot$, 285};
+    \node[student, right=9mm of s, text width=2.4cm] (a) {$\pf$\\ \tiny plain MLP, TorchScript};
+    \node[student, right=9mm of a, text width=2.0cm] (t) {$\tanh(\mu)$\\ \tiny deterministic};
+    \node[envb, right=9mm of t, text width=2.0cm] (o) {16 actions\\ \tiny $\times$ bounds};
+    \draw[ars] (s) -- (a); \draw[ars] (a) -- (t); \draw[ars] (t) -- (o);
+
+    \node[dropb, below=9mm of a, text width=8.2cm]
+      {\textbf{discarded:} guide actor $\pg$ \; $\bullet$ \; critic $Q_f,Q_g$ \; $\bullet$ \; target critic \;
+       $\bullet$ \; temperatures $\alpha_f,\alpha_g$ \; $\bullet$ \; replay buffer \; $\bullet$ \; $\lambda$, $p_g$};
+  \end{tikzpicture}
+  \end{center}
+  \vspace{0.4em}
+  \begin{itemize}\footnotesize
+    \item The deployed artifact is \textbf{architecturally identical} to a vanilla SAC actor.
+          Guided training costs \emph{nothing} at inference --- the strongest practical
+          argument for asymmetric methods.
+    \item Nothing privileged can leak: the actor consumes a fixed 285-dim slice and the
+          export path never reads the guide's files.
+  \end{itemize}
+\end{frame}
+
+% =====================================================================
+\section{Implementation}
+
+\begin{frame}{Code map}
+  Built as an \textbf{extension} of the FlashSAC backbone, never a fork: the vendored
+  learning core is byte-identical, and without the \texttt{-{}-guided} flag the pipeline is
+  the unmodified baseline.
+
+  \vspace{0.5em}
+  \begin{center}\footnotesize
+  \begin{tabular}{ll}
+    \toprule
+    \texttt{gsac/config.py} & config dataclass; $\lambda(t)$, $p_g(t)$; fail-fast validation \\
+    \texttt{gsac/network.py} & \texttt{GuidedDoubleCritic}: shared trunks $+$ second head-pair \\
+    \texttt{gsac/update.py} & the three losses above, each traced to its source equation \\
+    \texttt{gsac/agent.py} & \texttt{GuidedFlashSACAgent}: networks, rollout mixing, updates \\
+    \midrule
+    \texttt{train.py -{}-guided} & launcher flag; everything guided is behind it \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+
+  \vspace{0.6em}
+  {\footnotesize The subclass overrides exactly three hooks: \texttt{sample\_actions}
+  (mixing), \texttt{update} (three losses), \texttt{save/load} (guide checkpoints).}
+\end{frame}
+
+\begin{frame}{One codebase, four experiments}
+  The mechanism decomposition is expressible as \emph{configuration}, which is what makes an
+  honest ablation cheap:
+
+  \vspace{0.5em}
+  \begin{center}\footnotesize
+  \begin{tabular}{llll}
+    \toprule
+    \textbf{Rung} & \textbf{Isolates} & \textbf{Setting} & \textbf{Cost} \\
+    \midrule
+    A1 & vanilla SAC & symmetric critic & baseline \\
+    A2 & \textbf{M1} asymmetric critic & \texttt{-{}-no-train\_guide} & no guide built \\
+    A4 & \textbf{M2} grounding mixture & \texttt{-{}-lambda\_max 0} & guide trained, no imitation \\
+    A5 & \textbf{M3} full Guided SAC & default & everything on \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+
+  \vspace{0.7em}
+  \begin{block}{The question this design exists to answer}
+    Which of the three mechanisms actually pays --- and is the second actor worth its cost?
+    The literature has never separated them. Whatever the answer, it is informative.
+  \end{block}
+\end{frame}
+
+\begin{frame}{Summary}
+  \begin{itemize}
+    \item Blind locomotion is a genuine POMDP; the simulator knows far more than the robot
+          ever will.
+    \item Guided SAC bundles three separable mechanisms. We keep the free one (asymmetric
+          critic), soften the risky one (imitation via scheduled KL), and use the expensive
+          one sparingly and for a different reason than the original (value grounding).
+    \item The single-agent reduction is not a copy: the teacher needs \textbf{its own value
+          head}, otherwise its advantage is capped by construction.
+    \item The imitation gap is the method's real theoretical weakness; latent supervision is
+          the principled successor if action-space imitation does not pay.
+    \item \textbf{Deployment cost is exactly zero} --- the shipped network is a plain SAC actor
+          on proprioception.
+  \end{itemize}
+\end{frame}
+
+\end{document}
