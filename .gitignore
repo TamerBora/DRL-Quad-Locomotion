@@ -23,6 +23,12 @@ launchers/*
 launchers/sbx_source/*
 !launchers/sbx_source/gsac/
 
+# GSAC-for-Go2W main dev: track own docs/notes; exclude third-party material
+# (Cerci's reference code + the IEEE paper transcription must not be pushed)
+!launchers/GUIDED SOFT ACTOR CRITIC FOR GO2W MAIN DEV/
+launchers/GUIDED SOFT ACTOR CRITIC FOR GO2W MAIN DEV/ozet_kodlar_v2/
+launchers/GUIDED SOFT ACTOR CRITIC FOR GO2W MAIN DEV/Multi_Agent_Guided_DRL_Adversarial_Attacks(1).md
+
 # Exclude go2w_flashsac runtime artifacts and the cloned FlashSAC repo
 launchers/go2w_flashsac/FlashSAC/
 launchers/go2w_flashsac/logs/
