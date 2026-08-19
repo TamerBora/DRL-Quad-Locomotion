@@ -209,6 +209,29 @@
   \end{block}
 \end{frame}
 
+\begin{frame}{Where the data comes from}
+  \relax
+  {\footnotesize Before anything is learned, the robot must act and the experience must be
+  recorded. \textbf{Both actors can drive the robot} --- that is what $p_g$ controls.}
+  \vspace{0.3em}
+  \begin{center}
+  \scalebox{0.85}{%
+  \begin{tikzpicture}[x=1cm, y=1cm]
+    \node[student, text width=3.0cm] (pf) at (0,0.9)  {\textbf{Control actor} $\pf$\\ \tiny drives $\approx 97\%$ of steps};
+    \node[guide,   text width=3.0cm] (pg) at (0,-0.9) {\textbf{Guide actor} $\pg$\\ \tiny drives $p_g \approx 3\%$ of steps};
+    \node[envb,    text width=2.2cm] (env) at (4.6,0) {\textbf{robot}\\ \tiny in simulation};
+    \node[envb,    text width=3.1cm] (buf) at (10.0,0) {\textbf{replay buffer}\\ \tiny every step written down};
+    \draw[ars] (pf) -- (env); \draw[arg] (pg) -- (env);
+    \draw[ar]  (env) -- node[lbl, above, align=center] {state, action,\\ reward} (buf);
+  \end{tikzpicture}}
+  \end{center}
+  \vspace{0.2em}
+  {\footnotesize So ``the \textbf{stored} action'' is \emph{usually} the student's and
+  \emph{occasionally} the teacher's. That small teacher fraction is the only reason $Q_g$ ever
+  gets trained on actions the teacher \textbf{really took} --- everything else it is asked about
+  is imagined.}
+\end{frame}
+
 \begin{frame}{How the critic is trained}
   \relax
   {\footnotesize Both head-pairs see the \textbf{same} input: the state, and the action that was
@@ -216,7 +239,7 @@
   policy is assumed to act next.}
   \vspace{0.2em}
   \begin{center}
-  \scalebox{0.78}{%
+  \scalebox{0.7}{%
   \begin{tikzpicture}[x=1cm, y=1cm]
     \foreach \y in {1.1,-1.1} \draw[cCritic!22, line width=16mm] (-0.5,\y) -- (13.4,\y);
     % gradient side
@@ -236,9 +259,11 @@
   \end{tikzpicture}}
   \end{center}
   \vspace{-0.1em}
-  {\footnotesize The critic \textbf{learns} only from actions that really happened (top). It is
-  \textbf{asked about} imagined future actions (bottom) --- which is why the teacher must
-  occasionally drive for real, or $Q_g$ would only ever be asked about actions it has never seen.}
+  {\footnotesize \textbf{How does the teacher influence the critic at all?} Not through the top
+  row --- that is whatever was executed. Through the \textbf{bottom} row: $Q_g$'s target is built
+  by asking ``what if the \emph{teacher} plays from here?'', so the teacher's policy shapes what
+  $Q_g$ is trained \emph{toward}. $Q_f$ asks the same question about the student. Same input, two
+  different targets, two different value functions.}
 \end{frame}
 
 \begin{frame}{How each actor uses the critic}
@@ -247,7 +272,7 @@
   \emph{its own} head-pair how good its proposed action is, and moves to make that answer larger.}
   \vspace{0.3em}
   \begin{center}
-  \scalebox{0.78}{%
+  \scalebox{0.68}{%
   \begin{tikzpicture}[x=1cm, y=1cm]
     \draw[cGuide!22,  line width=16mm] (-0.5,1.1)  -- (13.4,1.1);
     \draw[cStudent!22,line width=16mm] (-0.5,-1.1) -- (13.4,-1.1);
@@ -264,56 +289,34 @@
   \end{tikzpicture}}
   \end{center}
   \vspace{0.1em}
-  {\footnotesize Neither actor can touch the critic's weights here. The student's row carries the
-  \emph{one} extra term the whole method adds: stay close to the teacher, with weight $\lambda$.}
+  \vspace{-0.2em}
+  {\footnotesize \textbf{Frozen} $=$ only the \emph{actor's} weights change here.
+  \textbf{How many networks?} \emph{One} critic: 2 copies of the body (for pessimism) $\times$ 2
+  heads each $=$ 4 numbers --- the two student numbers give $Q_f$, the two teacher numbers $Q_g$
+  (smaller of each pair taken). Plus 2 actors. One of the five ships.}
 \end{frame}
 
-\begin{frame}{Why two value functions, and not one}
+\begin{frame}{Why the teacher needs its own scorecard}
   \relax
-  {\footnotesize \textbf{One head-pair per actor}: $\pf$ reads $Q_f$, $\pg$ reads $Q_g$.}
-  \begin{columns}[T]
-    \begin{column}{0.47\textwidth}
-      \begin{center}
-        {\footnotesize \textbf{One shared critic (naive)}}\\[4pt]
-        \scalebox{0.62}{\begin{tikzpicture}
-          \node[critic, text width=2.7cm] (q) at (0,0)
-            {$Q$ bootstrapped from $\pf$ only\\[2pt] \tiny $\Rightarrow$ it tracks $Q^{\pf}$};
-          \node[guide, text width=2.5cm, below=7mm of q] (g) {$\pg$ maximizes $Q^{\pf}$};
-          \draw[arg] (q) -- (g);
-          \node[lbl, below=4mm of g, text width=3.9cm, align=center, text=cGuide!70!black]
-            {one greedy step \emph{over the student};\\ never re-enters the bootstrap
-             $\Rightarrow$ never compounds};
-        \end{tikzpicture}}
-      \end{center}
-      \vspace{0.2em}
-      {\scriptsize The teacher's advantage is
-       \textcolor{cGuide!70!black}{\textbf{capped by construction}}.\par}
-    \end{column}
-    \begin{column}{0.47\textwidth}
-      \begin{center}
-        {\footnotesize \textbf{Two head-pairs (ours)}}\\[4pt]
-        \scalebox{0.62}{\begin{tikzpicture}
-          \node[critic, text width=2.6cm] (qf) at (0,0)
-            {$Q_f$: bootstrap $a' \!\sim\! \pf$\\ \tiny $\approx Q^{\pf}$};
-          \node[critic, text width=2.6cm, right=4mm of qf] (qg)
-            {$Q_g$: bootstrap $a_g' \!\sim\! \pg$\\ \tiny $\approx Q^{\pg}$};
-          \node[student, text width=2.1cm, below=9mm of qf] (sf) {$\pf$ reads $Q_f$};
-          \node[guide,   text width=2.1cm, below=9mm of qg] (sg) {$\pg$ reads $Q_g$};
-          \draw[ars] (qf) -- (sf);
-          \draw[arg] (qg) -- (sg);
-        \end{tikzpicture}}
-      \end{center}
-      \vspace{0.2em}
-      {\scriptsize Each actor optimizes \emph{its own} fixed point, so the teacher can run
-       ahead --- the student still optimizes the \textbf{deployed} policy's value.\par}
-    \end{column}
-  \end{columns}
+  {\footnotesize A value function is a \textbf{scorecard}: it rates a move by assuming somebody
+  keeps playing afterwards. \emph{Who} that somebody is changes the rating.}
   \vspace{0.5em}
-  \begin{center}
-    {\scriptsize \emph{Approximately}: the $n$-step reward follows the \textbf{behaviour}
-    trajectory, so $Q_g$ estimates ``take $a_t$, follow $\pf$ for $n\!-\!1$ steps, \emph{then}
-    $\pg$'' --- an $n$-step-lagged $Q^{\pg}$.}
-  \end{center}
+
+  \begin{block}{\small If the teacher is rated on the student's scorecard $Q_f$}
+    {\footnotesize every move is scored as ``\emph{this move, and then the \textbf{student} plays
+    on}''. The best the teacher can possibly score is \emph{one good move followed by student
+    play} --- its advantage is capped at a single step, however much better it really is.}
+  \end{block}
+
+  \begin{block}{\small With its own scorecard $Q_g$}
+    {\footnotesize moves are scored as ``\emph{this move, and then the \textbf{teacher} plays
+    on}''. Now the teacher's improvements build on each other, and the gap between teacher and
+    student can actually grow --- which is the entire point of having a teacher.}
+  \end{block}
+
+  \vspace{0.2em}
+  {\footnotesize The student keeps using $Q_f$ throughout: it must be judged by what the
+  \textbf{blind, deployed} policy can really achieve, not by what the teacher could do.}
 \end{frame}
 
 % =====================================================================
@@ -371,17 +374,19 @@
 \begin{frame}{Two knobs, doing two different things}
   \relax
   {\footnotesize They are \textbf{independent mechanisms}: one changes a \emph{loss}, the other
-  changes the \emph{data} that ends up in the buffer.}
+  changes the \emph{data}. Both are \textbf{open-loop} --- pre-programmed functions of the
+  training step counter. Neither reacts to how training is going, and neither reads the other.}
   \vspace{0.5em}
   \begin{center}\footnotesize
   \begin{tabular}{p{2.0cm} p{4.7cm} p{4.7cm}}
     \toprule
      & \textcolor{cAccent}{\textbf{$\lambda(t)$}} & \textcolor{cGuide}{\textbf{$p_g$}} \\
     \midrule
-    changes & the \textbf{student's loss} & \textbf{what data enters the buffer} \\[3pt]
-    does & pulls the student toward copying the teacher & lets the teacher \emph{drive} a few \% of steps \\[3pt]
-    exists to & transfer the teacher's skill & make $Q_g$ answer about actions the teacher really took \\[3pt]
-    if $=0$ & student ignores the teacher (plain SAC) & teacher never acts; $Q_g$ only ever sees imagined actions \\
+    changes & the \textbf{student's loss} & \textbf{what enters the buffer} \\[2pt]
+    does & pulls the student toward the teacher & lets the teacher \emph{drive} a few \% of steps \\[2pt]
+    exists to & transfer the teacher's skill & make $Q_g$ answer about \emph{real} teacher actions \\[2pt]
+    if $=0$ & student ignores the teacher & teacher never acts; $Q_g$ only sees imagined actions \\[2pt]
+    how it changes & step counter: $0 \to$ max $\to 0$ & step counter: constant, then $\to 0$ \\
     \bottomrule
   \end{tabular}
   \end{center}
@@ -390,7 +395,7 @@
 \begin{frame}{Both are scheduled, and both stop before the end}
   \relax
   \begin{center}
-  \scalebox{0.8}{%
+  \scalebox{0.68}{%
   \begin{tikzpicture}[x=1cm, y=1cm]
     \fill[cAccent!6] (0,0) rectangle (3,1.8); \fill[cAccent!16] (3,0) rectangle (8,1.8);
     \fill[cAccent!6] (8,0) rectangle (10,1.8);
@@ -407,10 +412,9 @@
   \end{tikzpicture}}
   \end{center}
   \vspace{0.4em}
-  {\footnotesize $\lambda$ rises from \textbf{zero} because an unconverged teacher emits noise ---
-  copying it early is worse than ignoring it. Both return to zero so the student spends the last
-  stretch under its own constraints, which is the cheapest guard against inheriting behaviour a
-  blind robot cannot actually execute.}
+  {\footnotesize Both curves are \textbf{read off the step counter} --- no feedback, no
+  adaptation. $\lambda$ starts at \textbf{zero} because an unconverged teacher emits noise; both
+  end at zero so the student finishes under its own constraints.}
 \end{frame}
 
 \begin{frame}{The imitation gap --- the method's real weakness}
